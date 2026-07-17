@@ -3,15 +3,6 @@
 version = 4
 
 [[package]]
-name = "common_mark_rust"
-version = "0.1.0"
-dependencies = [
- "json_to_test_macro",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19,7 +10,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "json_to_test_macro"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "quote",
  "serde",
