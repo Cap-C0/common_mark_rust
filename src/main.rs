@@ -1,6 +1,4 @@
-pub mod lib;
-
-use crate::lib::markdown_to_html;
+use common_mark_rust::markdown_to_html;
 use serde_json::Value;
 use std::env;
 use std::fmt::Result;
