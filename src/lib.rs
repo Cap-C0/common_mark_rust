@@ -2,7 +2,7 @@ use crate::Block::*;
 use crate::Inline;
 use crate::ListType::*;
 use crate::ast_types::*;
-
+use std::mem;
 pub mod ast_types;
 
 pub fn markdown_to_html(markdown: &str) -> String {
@@ -29,16 +29,11 @@ pub fn markdown_to_html(markdown: &str) -> String {
     for line in lines {
         // first check continuation conditions
         let mut offset: usize = 0;
-        let mut last_matched_container: Vec<usize> = vec![];
-        check_continuation_conditions(&document, &line, &mut offset, &mut last_matched_container);
+        let mut open_block_depth: usize = 0;
+        check_continuation_conditions(&document, &line, &mut offset, &mut open_block_depth);
 
         // now we look for the start of any new structure
-        create_new_block_starts(
-            &mut document,
-            &line,
-            &mut offset,
-            &mut last_matched_container,
-        );
+        create_new_block_starts(&mut document, &line, &mut offset, &mut open_block_depth);
     }
 
     // see if we can add a new item to the list
@@ -50,10 +45,9 @@ fn check_continuation_conditions(
     document: &Block,
     line: &Vec<char>,
     offset: &mut usize,
-    last_matched_container: &mut Vec<usize>,
+    open_block_depth: &mut usize,
 ) {
     let mut current_block = document;
-    let mut prev_block_offset = 0;
     // println!("called ccc!");
     'outer: loop {
         match current_block {
@@ -61,7 +55,6 @@ fn check_continuation_conditions(
                 None => break,
                 Some(b) => {
                     // println!("has children!");
-                    prev_block_offset = blocks.len() - 1;
                     current_block = b;
                 }
             },
@@ -78,11 +71,10 @@ fn check_continuation_conditions(
                     println!("bq cc passed!");
                     if line.len() <= *offset + i + 1 {
                         *offset += i + 1;
-                        last_matched_container.push(prev_block_offset);
+                        *open_block_depth += 1;
                         match blocks.last() {
                             None => break 'outer,
                             Some(b) => {
-                                prev_block_offset = blocks.len() - 1;
                                 current_block = b;
                             }
                         }
@@ -93,11 +85,10 @@ fn check_continuation_conditions(
                     } else {
                         *offset += i + 1;
                     }
-                    last_matched_container.push(prev_block_offset);
+                    *open_block_depth += 1;
                     match blocks.last() {
                         None => break 'outer,
                         Some(b) => {
-                            prev_block_offset = blocks.len() - 1;
                             current_block = b;
                         }
                     }
@@ -109,8 +100,7 @@ fn check_continuation_conditions(
                 break;
             }
             List(list_items, _, _) => {
-                last_matched_container.push(prev_block_offset);
-                prev_block_offset = list_items.len() - 1;
+                *open_block_depth += 1;
                 // lists are guaranteed to have at least one item
                 current_block = list_items.last().unwrap();
             }
@@ -121,11 +111,10 @@ fn check_continuation_conditions(
                     }
                 }
                 *offset += *indent_amount;
-                last_matched_container.push(prev_block_offset);
+                *open_block_depth += 1;
                 match blocks.last() {
                     None => break 'outer,
                     Some(b) => {
-                        prev_block_offset = blocks.len() - 1;
                         current_block = b;
                     }
                 }
@@ -136,7 +125,7 @@ fn check_continuation_conditions(
                 println!("{}", is_blank_line(line, *offset));
                 if !is_blank_line(line, *offset) && *is_open {
                     println!("paragrah cc matched!");
-                    last_matched_container.push(prev_block_offset);
+                    *open_block_depth += 1;
                 }
                 break;
             }
@@ -147,11 +136,11 @@ fn check_continuation_conditions(
                     break;
                 }
                 *offset += 4;
-                last_matched_container.push(prev_block_offset);
+                *open_block_depth += 1;
                 break;
             }
             FencedCodeBlock(items, tic, tic_count, indent_count) => {
-                last_matched_container.push(prev_block_offset);
+                *open_block_depth += 1;
                 break;
             }
             HTMLBlock(items) => todo!(),
@@ -168,11 +157,11 @@ fn is_blank_line(line: &Vec<char>, offset: usize) -> bool {
 fn test_cc(ast: &mut Block, line: &str, expected_block: &mut Block, exp_offset: usize) {
     let line: Vec<char> = line.chars().collect();
     // println!("{:?}", line);
-    let mut lmc = vec![];
+    let mut obd = 0;
     let mut offset = 0;
-    check_continuation_conditions(&ast, &line, &mut offset, &mut lmc);
+    check_continuation_conditions(&ast, &line, &mut offset, &mut obd);
     println!("{}", line[offset]);
-    assert_eq!((ast.get_block(&lmc), offset), (expected_block, exp_offset));
+    assert_eq!((ast.get_block(obd), offset), (expected_block, exp_offset));
 }
 
 #[test]
@@ -304,9 +293,9 @@ fn create_new_block_starts(
     document: &mut Block,
     line: &Vec<char>,
     offset: &mut usize,
-    lmc: &mut Vec<usize>,
+    obd: &mut usize,
 ) {
-    match document.get_block(&lmc) {
+    match document.get_block(*obd) {
         IndentedCodeBlock(_) => return, // go to parse this as plain text, no changes
         _ => (),
     }
@@ -323,7 +312,7 @@ fn create_new_block_starts(
     // - lazy continuation
     // also check for if it matches a leaf node, which indicates that the last matched
     // Container node is the leaf-1
-    let (open_par_above, ends_in_leaf): (bool, bool) = match document.get_block(&lmc) {
+    let (open_par_above, ends_in_leaf): (bool, bool) = match document.get_block(*obd) {
         Paragraph(_, open) => (*open, true),
         b => (false, b.is_leaf()),
     };
@@ -331,6 +320,8 @@ fn create_new_block_starts(
 
     // c is first non space character after offset
     let mut c = dbg!(line[*offset + i]);
+
+    // First check for SetextHeading
     if open_par_above && i <= 3 {
         if "-=".contains(c) {
             // the line is of the form "[pre-matched-structure][1-3 space]c*' '*"
@@ -343,12 +334,16 @@ fn create_new_block_starts(
                     .count()
             ) == 0
             {
-                let h_text: Inline = match document.get_block(&lmc) {
-                    Paragraph(inline, _) => inline.clone(),
-                    _ => panic!(),
-                };
+                let mut h_text = vec![];
+                mem::swap(
+                    &mut h_text,
+                    match document.get_block(*obd) {
+                        Paragraph(inline, _) => inline,
+                        _ => panic!(),
+                    },
+                );
                 println!("htext: {:?}", h_text);
-                match document.get_block(&lmc) {
+                match document.get_block(*obd - 1) {
                     // by definition some container block
                     Document(blocks) |
                     BlockQuote(blocks, _) |
@@ -365,16 +360,42 @@ fn create_new_block_starts(
     }
 
     // next check for thematic break
-    if "-*_".contains(c) {
+    if "-*_".contains(c) && i <= 3 {
         let mut non_space = line.iter().skip(*offset).filter(|k| **k != ' ');
-        let mut count = non_space.clone().count();
+        let count = non_space.clone().count();
+        dbg!(*obd);
         if count >= 3 && non_space.all(|k| *k == c) {
-            match document.get_general_container(lmc) {
+            match dbg!(document.get_general_container(*obd)) {
                 Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
                     blocks.push(ThematicBreak);
+                    *offset = line.len() - 1;
+                    return;
                 }
                 _ => panic!("should only match on general container"),
             }
+        }
+    }
+
+    //now check if we can add a new list item to an existing list
+    let last_block_list: Option<ListType> = match document.get_block(*obd) {
+        List(_, _, lt) => Some(lt.clone()),
+        _ => None,
+    };
+
+    if last_block_list.is_some() {
+        match list_item_encountered(line, offset) {
+            Some((lt, li, offset_dif)) => {
+                if last_block_list.unwrap() == lt {
+                    *offset += offset_dif;
+                    match document.get_block(*obd) {
+                        List(blocks, _, _) => blocks.push(li),
+                        _ => unreachable!(),
+                    }
+                    *obd += 1;
+                    unmatched_closed = true;
+                }
+            }
+            None => (),
         }
     }
 
@@ -389,11 +410,11 @@ fn create_new_block_starts(
 fn test_cnbs(ast: &mut Block, line: &str, expected_ast: &mut Block, exp_offset: usize) {
     let line: Vec<char> = line.chars().collect();
     // println!("{:?}", line);
-    let mut lmc = vec![];
+    let mut obd = 0;
     let mut offset = 0;
-    check_continuation_conditions(&ast, &line, &mut offset, &mut lmc);
-    println!("{:?}", lmc);
-    create_new_block_starts(ast, &line, &mut offset, &mut lmc);
+    check_continuation_conditions(&ast, &line, &mut offset, &mut obd);
+    println!("{:?}", obd);
+    create_new_block_starts(ast, &line, &mut offset, &mut obd);
     assert_eq!((ast, offset), (expected_ast, exp_offset));
 }
 
@@ -450,11 +471,94 @@ fn test_cnbs_5() {
             vec![Paragraph(vec!['a', 'b'], true)],
             false,
         )]),
-        "-",
+        ">-",
         &mut Document(vec![BlockQuote(
             vec![Paragraph(vec!['a', 'b'], true)],
             false,
         )]),
         0,
+    );
+}
+
+#[test]
+fn test_cnbs_6() {
+    test_cnbs(
+        &mut Document(vec![BlockQuote(
+            vec![Paragraph(vec!['a', 'b'], true)],
+            true,
+        )]),
+        ">---",
+        &mut Document(vec![BlockQuote(
+            vec![SetextHeading(vec!['a', 'b'], 2)],
+            true,
+        )]),
+        3,
+    );
+}
+
+#[test]
+fn test_cnbs_7() {
+    test_cnbs(
+        &mut Document(vec![BlockQuote(
+            vec![Paragraph(vec!['a', 'b'], true)],
+            true,
+        )]),
+        ">***",
+        &mut Document(vec![BlockQuote(
+            vec![Paragraph(vec!['a', 'b'], true), ThematicBreak],
+            true,
+        )]),
+        3,
+    );
+}
+
+#[test]
+fn test_cnbs_8() {
+    test_cnbs(
+        &mut Document(vec![BlockQuote(
+            vec![List(
+                vec![ListItem(vec![ThematicBreak], 2)],
+                true,
+                UnorderedList('*'),
+            )],
+            true,
+        )]),
+        ">***",
+        &mut Document(vec![BlockQuote(
+            vec![
+                List(
+                    vec![ListItem(vec![ThematicBreak], 2)],
+                    true,
+                    UnorderedList('*'),
+                ),
+                ThematicBreak,
+            ],
+            true,
+        )]),
+        3,
+    );
+}
+
+#[test]
+fn test_cnbs_9() {
+    test_cnbs(
+        &mut Document(vec![BlockQuote(
+            vec![List(
+                vec![ListItem(vec![ThematicBreak], 2)],
+                true,
+                UnorderedList('*'),
+            )],
+            true,
+        )]),
+        ">   ***",
+        &mut Document(vec![BlockQuote(
+            vec![List(
+                vec![ListItem(vec![ThematicBreak, ThematicBreak], 2)],
+                true,
+                UnorderedList('*'),
+            )],
+            true,
+        )]),
+        6,
     );
 }

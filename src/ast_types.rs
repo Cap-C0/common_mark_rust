@@ -1,6 +1,6 @@
 use std::ops::ControlFlow::Break;
 
-use crate::ast_types::Block::*;
+use crate::ast_types::{Block::*, ListType::*};
 
 pub type Inline = Vec<char>;
 
@@ -20,23 +20,18 @@ pub enum Block {
 }
 
 impl Block {
-    pub fn get_block(&mut self, next_offset: &Vec<usize>) -> &mut Block {
-        self.get_block_helper(&mut next_offset.iter())
+    pub fn get_block(&mut self, open_block_depth: usize) -> &mut Block {
+        self.get_block_helper(open_block_depth)
     }
-    fn get_block_helper(
-        &mut self,
-        next_offset_iter: &mut dyn Iterator<Item = &usize>,
-    ) -> &mut Block {
-        match next_offset_iter.next() {
-            None => self,
-            Some(offset) => match self {
+
+    fn get_block_helper(&mut self, open_block_depth: usize) -> &mut Block {
+        match open_block_depth {
+            0 => self,
+            x => match self {
                 Document(blocks)
                 | BlockQuote(blocks, _)
                 | List(blocks, _, _)
-                | ListItem(blocks, _) => blocks
-                    .get_mut(*offset)
-                    .unwrap()
-                    .get_block_helper(next_offset_iter),
+                | ListItem(blocks, _) => blocks.last_mut().unwrap().get_block_helper(x - 1),
                 _ => unreachable!(),
             },
         }
@@ -46,28 +41,40 @@ impl Block {
     //     self.get_block(next_offset[..next_offset.len() - if last_is_leaf { 1 } else { 0 }])
     // }
 
-    pub fn get_general_container(&mut self, next_offset: &Vec<usize>) -> &mut Block {
-        let mut new_offsets: Vec<usize> = vec![];
-        let mut prev_block_offset = 0;
-        let mut list_item_offset: Option<usize> = None;
-        let current_block = &self;
-        for o in next_offset {
+    pub fn get_general_container(&mut self, open_block_depth: usize) -> &mut Block {
+        let mut new_depth: usize = 0;
+        let mut seen_list: bool = false;
+        let mut current_block: &Block = self;
+        dbg!(open_block_depth);
+        while new_depth < open_block_depth {
             match current_block {
-                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
-                    match list_item_offset {
-                        Some(x) => {
-                            new_offsets.push(x);
-                            list_item_offset = None;
-                            new_offsets.push(*o);
+                Document(blocks) => match blocks.last() {
+                    // no extra depth here
+                    None => break,
+                    Some(b) => current_block = b,
+                },
+                BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                    if seen_list {
+                        if new_depth + 2 > open_block_depth {
+                            break;
                         }
-                        None => {}
+                        seen_list = false;
+                        new_depth += 1;
+                    }
+                    new_depth += 1;
+                    match blocks.last() {
+                        None => break,
+                        Some(b) => current_block = b,
                     }
                 }
-                List(blocks, _, _) => list_item_offset = Some(*o),
+                List(blocks, _, _) => {
+                    seen_list = true;
+                    current_block = blocks.last().unwrap();
+                }
                 _ => break,
             }
         }
-        self.get_block(&new_offsets)
+        self.get_block(dbg!(new_depth))
     }
 
     pub fn is_leaf(&self) -> bool {
@@ -108,11 +115,27 @@ impl Block {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum ListType {
     OrderedList(char, usize),
     UnorderedList(char),
 }
+
+impl PartialEq for ListType {
+    fn eq(&self, other: &Self) -> bool {
+        match other {
+            OrderedList(c, _) => match self {
+                OrderedList(d, _) => *c == *d,
+                _ => false,
+            },
+            UnorderedList(c) => match self {
+                UnorderedList(d) => *c == *d,
+                _ => false,
+            },
+        }
+    }
+}
+impl Eq for ListType {}
 
 #[test]
 fn test_get_block_1() {
@@ -124,9 +147,8 @@ fn test_get_block_1() {
         )],
         false,
     )]);
-    let descension: Vec<usize> = vec![0, 0, 0, 0];
-    let des_iter = descension.iter();
-    assert_eq!(test_tree.get_block(&descension), &mut ThematicBreak)
+    let descension: usize = 4;
+    assert_eq!(test_tree.get_block(descension), &mut ThematicBreak)
 }
 
 #[test]
@@ -142,14 +164,14 @@ fn test_get_block_2() {
         ),
         BlockQuote(vec![Paragraph(vec!['p', 'o'], true)], true),
     ]);
-    let descension: Vec<usize> = vec![1];
-    let bq = test_tree.get_block(&descension);
+    let descension = 1;
+    let bq = test_tree.get_block(descension);
     match bq {
         BlockQuote(v, _) => v.push(ThematicBreak),
         _ => unreachable!(),
     }
     assert_eq!(
-        test_tree.get_block(&descension),
+        test_tree.get_block(descension),
         &mut BlockQuote(vec![Paragraph(vec!['p', 'o'], true), ThematicBreak], true),
     )
 }
@@ -177,4 +199,28 @@ fn test_get_last_block_1() {
 fn test_get_last_block_2() {
     let mut test_tree = Document(vec![]);
     assert_eq!(test_tree.get_last_block(), &mut Document(vec![]))
+}
+
+#[test]
+fn test_get_last_general_container() {
+    let ast = &mut Document(vec![BlockQuote(
+        vec![List(
+            vec![ListItem(vec![ThematicBreak], 2)],
+            true,
+            UnorderedList('*'),
+        )],
+        true,
+    )]);
+    let depth = 2; // matched the list but not list item
+    assert_eq!(
+        ast.get_general_container(depth),
+        &mut BlockQuote(
+            vec![List(
+                vec![ListItem(vec![ThematicBreak], 2)],
+                true,
+                UnorderedList('*'),
+            )],
+            true,
+        )
+    )
 }
