@@ -1,7 +1,7 @@
 use crate::Block::*;
+use crate::Inline;
 use crate::ListType::*;
-use crate::ast_types::Block;
-use crate::ast_types::ListType;
+use crate::ast_types::*;
 
 pub mod ast_types;
 
@@ -23,12 +23,6 @@ pub fn markdown_to_html(markdown: &str) -> String {
         .map(|x| char::from_u32(x).unwrap())
         .collect();
 
-    fn is_blank_line(line: Vec<char>, offset: usize) {
-        line.iter()
-            .take(offset)
-            .any(|c| *c != ' ' && *c != char::from_u32(0x09).unwrap());
-    }
-
     // 1st create block structure of document
     let mut document = Document(vec![]);
 
@@ -39,7 +33,12 @@ pub fn markdown_to_html(markdown: &str) -> String {
         check_continuation_conditions(&document, &line, &mut offset, &mut last_matched_container);
 
         // now we look for the start of any new structure
-        let mut last_open = document.get_block(&mut last_matched_container.iter());
+        create_new_block_starts(
+            &mut document,
+            &line,
+            &mut offset,
+            &mut last_matched_container,
+        );
     }
 
     // see if we can add a new item to the list
@@ -70,30 +69,15 @@ fn check_continuation_conditions(
                 if !*is_open {
                     break 'outer;
                 }
-                // println!("checing cc for a bq!");
-                for i in 0..4 {
-                    if line.len() <= *offset + i {
-                        break;
-                    }
-                    if line[*offset + i] == '>' {
-                        //bounds check
-                        if line.len() <= *offset + i + 1 {
-                            *offset += i + 1;
-                            last_matched_container.push(prev_block_offset);
-                            match blocks.last() {
-                                None => break 'outer,
-                                Some(b) => {
-                                    prev_block_offset = blocks.len() - 1;
-                                    current_block = b;
-                                }
-                            }
-                            continue 'outer;
-                        }
-                        if line[*offset + i + 1] == ' ' {
-                            *offset += i + 2;
-                        } else {
-                            *offset += i + 1;
-                        }
+                let i = space_indent_count(line, offset);
+                if line.len() <= *offset + i || i > 3 {
+                    break;
+                }
+                if line[*offset + i] == '>' {
+                    //bounds check
+                    println!("bq cc passed!");
+                    if line.len() <= *offset + i + 1 {
+                        *offset += i + 1;
                         last_matched_container.push(prev_block_offset);
                         match blocks.last() {
                             None => break 'outer,
@@ -104,9 +88,23 @@ fn check_continuation_conditions(
                         }
                         continue 'outer;
                     }
-                    if line[*offset + i] != ' ' {
-                        break;
+                    if line[*offset + i + 1] == ' ' {
+                        *offset += i + 2;
+                    } else {
+                        *offset += i + 1;
                     }
+                    last_matched_container.push(prev_block_offset);
+                    match blocks.last() {
+                        None => break 'outer,
+                        Some(b) => {
+                            prev_block_offset = blocks.len() - 1;
+                            current_block = b;
+                        }
+                    }
+                    continue 'outer;
+                }
+                if line[*offset + i] != ' ' {
+                    break;
                 }
                 break;
             }
@@ -132,23 +130,21 @@ fn check_continuation_conditions(
                     }
                 }
             }
-            ATXHeading(_, _) => break,
+            ATXHeading(_, _) => break, // no additional context on the newline after a heading should change the heading
             SetextHeading(_, _) => break,
             Paragraph(_, is_open) => {
+                println!("{}", is_blank_line(line, *offset));
                 if !is_blank_line(line, *offset) && *is_open {
+                    println!("paragrah cc matched!");
                     last_matched_container.push(prev_block_offset);
                 }
                 break;
             }
             ThematicBreak => break,
             IndentedCodeBlock(_) => {
-                for i in 0..4 {
-                    if line.len() >= *offset + i {
-                        break;
-                    }
-                    if line[*offset + i] != ' ' {
-                        break;
-                    }
+                let i = space_indent_count(line, offset);
+                if line.len() <= *offset + i || i < 4 {
+                    break;
                 }
                 *offset += 4;
                 last_matched_container.push(prev_block_offset);
@@ -165,8 +161,8 @@ fn check_continuation_conditions(
 
 fn is_blank_line(line: &Vec<char>, offset: usize) -> bool {
     line.iter()
-        .take(offset)
-        .any(|c| *c != ' ' && *c != char::from_u32(0x09).unwrap())
+        .skip(offset)
+        .all(|c| *c == ' ' || *c == char::from_u32(0x09).unwrap())
 }
 
 fn test_cc(ast: &mut Block, line: &str, expected_block: &mut Block, exp_offset: usize) {
@@ -176,10 +172,7 @@ fn test_cc(ast: &mut Block, line: &str, expected_block: &mut Block, exp_offset: 
     let mut offset = 0;
     check_continuation_conditions(&ast, &line, &mut offset, &mut lmc);
     println!("{}", line[offset]);
-    assert_eq!(
-        (ast.get_block(&mut lmc.iter()), offset),
-        (expected_block, exp_offset)
-    );
+    assert_eq!((ast.get_block(&lmc), offset), (expected_block, exp_offset));
 }
 
 #[test]
@@ -262,11 +255,206 @@ fn test_cc_both_3() {
     let mut exp_tree = BlockQuote(vec![], true);
     test_cc(&mut test_tree, "  > hello", &mut exp_tree, 4);
 }
-/*
-Each line that is processed has an effect on this tree.
-The line is analyzed and, depending on its contents, the
-document may be altered in one or more of the following ways:
-    1. One or more open blocks may be closed.
-    2. One or more new blocks may be created as children of the last open block.
-    3. Text may be added to the last (deepest) open block remaining on the tree.
- */
+
+fn space_indent_count(line: &Vec<char>, offset: &usize) -> usize {
+    line.iter().skip(*offset).take_while(|c| **c == ' ').count()
+}
+
+fn list_item_encountered(line: &Vec<char>, offset: &usize) -> Option<(ListType, Block, usize)> {
+    let i = space_indent_count(line, offset);
+    if line.len() <= *offset + i || i > 3 {
+        return None;
+    }
+    if line[*offset + i].is_numeric() {
+        let mut number_builder = String::from(line[*offset + i]);
+        for j in 1..10 {
+            if line.len() <= *offset + i + j {
+                return None;
+            }
+            if line[*offset + i + j].is_numeric() {
+                number_builder.push(line[*offset + i + j]);
+                continue;
+            }
+            if ".)".contains(line[*offset + i + j]) || line[*offset + i + j + 1] == ' ' {
+                if line.len() == *offset + i + j + 1 {
+                    return Some((
+                        OrderedList(line[*offset + i + j], number_builder.parse().unwrap()),
+                        ListItem(vec![], i + j + 2),
+                        i + j + 2,
+                    ));
+                }
+            }
+            return None;
+        }
+    }
+    if "-+*".contains(line[*offset + i]) {
+        if line.len() == *offset + i + 1 || line[*offset + i + 1] == ' ' {
+            return Some((
+                UnorderedList(line[*offset + i]),
+                ListItem(vec![], i + 2),
+                i + 2,
+            ));
+        }
+        return None;
+    }
+    None
+}
+
+fn create_new_block_starts(
+    document: &mut Block,
+    line: &Vec<char>,
+    offset: &mut usize,
+    lmc: &mut Vec<usize>,
+) {
+    match document.get_block(&lmc) {
+        IndentedCodeBlock(_) => return, // go to parse this as plain text, no changes
+        _ => (),
+    }
+
+    let i = space_indent_count(line, offset);
+    dbg!(&offset);
+    dbg!(i);
+    if line.len() <= *offset + i {
+        todo!();
+    }
+    let mut unmatched_closed = false;
+    // first check if we have a paragragh above for:
+    // - setext heading creation
+    // - lazy continuation
+    // also check for if it matches a leaf node, which indicates that the last matched
+    // Container node is the leaf-1
+    let (open_par_above, ends_in_leaf): (bool, bool) = match document.get_block(&lmc) {
+        Paragraph(_, open) => (*open, true),
+        b => (false, b.is_leaf()),
+    };
+    println!("open_par_above: {}", open_par_above);
+
+    // c is first non space character after offset
+    let mut c = dbg!(line[*offset + i]);
+    if open_par_above && i <= 3 {
+        if "-=".contains(c) {
+            // the line is of the form "[pre-matched-structure][1-3 space]c*' '*"
+            dbg!(line);
+            if dbg!(
+                line.iter()
+                    .skip(*offset + i)
+                    .skip_while(|k| **k == c)
+                    .skip_while(|k| **k == ' ')
+                    .count()
+            ) == 0
+            {
+                let h_text: Inline = match document.get_block(&lmc) {
+                    Paragraph(inline, _) => inline.clone(),
+                    _ => panic!(),
+                };
+                println!("htext: {:?}", h_text);
+                match document.get_block(&lmc) {
+                    // by definition some container block
+                    Document(blocks) |
+                    BlockQuote(blocks, _) |
+                    // List(blocks, _, list_type) => the only children of a list are list_blocks
+                    ListItem(blocks, _) => {
+                        *blocks.last_mut().unwrap() = SetextHeading(h_text, if c == '=' {1} else {2});
+                    }
+                    _ => panic!("should be unreachable!"),
+                }
+                *offset = line.len() - 1;
+                return;
+            }
+        }
+    }
+
+    // next check for thematic break
+    if "-*_".contains(c) {
+        let mut non_space = line.iter().skip(*offset).filter(|k| **k != ' ');
+        let mut count = non_space.clone().count();
+        if count >= 3 && non_space.all(|k| *k == c) {
+            match document.get_general_container(lmc) {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                    blocks.push(ThematicBreak);
+                }
+                _ => panic!("should only match on general container"),
+            }
+        }
+    }
+
+    if !open_par_above && i > 3 {
+        // 4 lines of whitespace and no open paragrah above to "continue" with it
+    }
+
+    // first check if can create ThematicBreak (this is because "- \n - - -" is a thematic break,
+    // not a new list item)
+}
+
+fn test_cnbs(ast: &mut Block, line: &str, expected_ast: &mut Block, exp_offset: usize) {
+    let line: Vec<char> = line.chars().collect();
+    // println!("{:?}", line);
+    let mut lmc = vec![];
+    let mut offset = 0;
+    check_continuation_conditions(&ast, &line, &mut offset, &mut lmc);
+    println!("{:?}", lmc);
+    create_new_block_starts(ast, &line, &mut offset, &mut lmc);
+    assert_eq!((ast, offset), (expected_ast, exp_offset));
+}
+
+#[test]
+fn test_cnbs_1() {
+    test_cnbs(
+        &mut Document(vec![BlockQuote(
+            vec![Paragraph(vec!['a', 'b'], true)],
+            true,
+        )]),
+        ">-",
+        &mut Document(vec![BlockQuote(
+            vec![SetextHeading(vec!['a', 'b'], 2)],
+            true,
+        )]),
+        1,
+    );
+}
+
+#[test]
+fn test_cnbs_2() {
+    test_cnbs(
+        &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+        "-",
+        &mut Document(vec![SetextHeading(vec!['a', 'b'], 2)]),
+        0,
+    );
+}
+
+#[test]
+fn test_cnbs_3() {
+    test_cnbs(
+        &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+        "=          ",
+        &mut Document(vec![SetextHeading(vec!['a', 'b'], 1)]),
+        10,
+    );
+}
+
+#[test]
+fn test_cnbs_4() {
+    test_cnbs(
+        &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+        "- -",
+        &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+        0,
+    );
+}
+
+#[test]
+fn test_cnbs_5() {
+    test_cnbs(
+        &mut Document(vec![BlockQuote(
+            vec![Paragraph(vec!['a', 'b'], true)],
+            false,
+        )]),
+        "-",
+        &mut Document(vec![BlockQuote(
+            vec![Paragraph(vec!['a', 'b'], true)],
+            false,
+        )]),
+        0,
+    );
+}
