@@ -1,0 +1,8 @@
+- [ ] new block starts
+  - [ ] setext heading
+  - [ ] thematic break
+  - [ ] new list item continuing
+  - [ ] quotes
+  - [ ] new list
+  - [ ] lazy paragraph continuation
+  - [ ] reference link defs

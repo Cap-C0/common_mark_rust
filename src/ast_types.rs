@@ -1,8 +1,14 @@
 use std::ops::ControlFlow::Break;
 
-use crate::ast_types::{Block::*, ListType::*};
+use crate::ast_types::{Block::*, InlineContent::*, ListType::*};
 
-pub type Inline = Vec<char>;
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum InlineContent {
+    Softbreak,
+    Text(Vec<char>),
+}
+
+type Inline = Vec<InlineContent>;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Block {
@@ -14,8 +20,9 @@ pub enum Block {
     SetextHeading(Inline, usize),
     Paragraph(Inline, bool),
     ThematicBreak,
-    IndentedCodeBlock(Inline),
-    FencedCodeBlock(Inline, char, usize, usize),
+    IndentedCodeBlock(Vec<char>),
+    FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
+    // (contents, is_open, marking char, info_string, indend_count, tilde_count)
     HTMLBlock(Inline),
 }
 
@@ -41,7 +48,7 @@ impl Block {
     //     self.get_block(next_offset[..next_offset.len() - if last_is_leaf { 1 } else { 0 }])
     // }
 
-    pub fn get_general_container(&mut self, open_block_depth: usize) -> &mut Block {
+    pub fn get_general_container(&mut self, open_block_depth: usize) -> (&mut Block, usize) {
         let mut new_depth: usize = 0;
         let mut seen_list: bool = false;
         let mut current_block: &Block = self;
@@ -74,7 +81,7 @@ impl Block {
                 _ => break,
             }
         }
-        self.get_block(dbg!(new_depth))
+        (self.get_block(dbg!(new_depth)), new_depth)
     }
 
     pub fn is_leaf(&self) -> bool {
@@ -115,14 +122,14 @@ impl Block {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ListType {
     OrderedList(char, usize),
     UnorderedList(char),
 }
 
-impl PartialEq for ListType {
-    fn eq(&self, other: &Self) -> bool {
+impl ListType {
+    pub fn same_list_eq(&self, other: &Self) -> bool {
         match other {
             OrderedList(c, _) => match self {
                 OrderedList(d, _) => *c == *d,
@@ -135,7 +142,6 @@ impl PartialEq for ListType {
         }
     }
 }
-impl Eq for ListType {}
 
 #[test]
 fn test_get_block_1() {
@@ -162,7 +168,7 @@ fn test_get_block_2() {
             )],
             false,
         ),
-        BlockQuote(vec![Paragraph(vec!['p', 'o'], true)], true),
+        BlockQuote(vec![Paragraph(vec![Text(vec!['p', 'o'])], true)], true),
     ]);
     let descension = 1;
     let bq = test_tree.get_block(descension);
@@ -172,7 +178,10 @@ fn test_get_block_2() {
     }
     assert_eq!(
         test_tree.get_block(descension),
-        &mut BlockQuote(vec![Paragraph(vec!['p', 'o'], true), ThematicBreak], true),
+        &mut BlockQuote(
+            vec![Paragraph(vec![Text(vec!['p', 'o'])], true), ThematicBreak],
+            true
+        ),
     )
 }
 
@@ -187,11 +196,11 @@ fn test_get_last_block_1() {
             )],
             false,
         ),
-        BlockQuote(vec![Paragraph(vec!['p', 'o'], true)], true),
+        BlockQuote(vec![Paragraph(vec![Text(vec!['p', 'o'])], true)], true),
     ]);
     assert_eq!(
         test_tree.get_last_block(),
-        &mut Paragraph(vec!['p', 'o'], true)
+        &mut Paragraph(vec![Text(vec!['p', 'o'])], true)
     )
 }
 
@@ -214,13 +223,16 @@ fn test_get_last_general_container() {
     let depth = 2; // matched the list but not list item
     assert_eq!(
         ast.get_general_container(depth),
-        &mut BlockQuote(
-            vec![List(
-                vec![ListItem(vec![ThematicBreak], 2)],
+        (
+            &mut BlockQuote(
+                vec![List(
+                    vec![ListItem(vec![ThematicBreak], 2)],
+                    true,
+                    UnorderedList('*'),
+                )],
                 true,
-                UnorderedList('*'),
-            )],
-            true,
+            ),
+            1
         )
     )
 }

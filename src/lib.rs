@@ -1,8 +1,11 @@
 use crate::Block::*;
 use crate::Inline;
 use crate::ListType::*;
+use crate::ast_types::InlineContent::Text;
 use crate::ast_types::*;
+use std::hint::black_box;
 use std::mem;
+use std::sync::TryLockError::Poisoned;
 pub mod ast_types;
 
 pub fn markdown_to_html(markdown: &str) -> String {
@@ -26,14 +29,20 @@ pub fn markdown_to_html(markdown: &str) -> String {
     // 1st create block structure of document
     let mut document = Document(vec![]);
 
-    for line in lines {
+    for (line_number, line) in lines.iter().enumerate() {
         // first check continuation conditions
         let mut offset: usize = 0;
         let mut open_block_depth: usize = 0;
         check_continuation_conditions(&document, &line, &mut offset, &mut open_block_depth);
 
         // now we look for the start of any new structure
-        create_new_block_starts(&mut document, &line, &mut offset, &mut open_block_depth);
+        create_new_block_starts(
+            &mut document,
+            &line,
+            &mut offset,
+            &mut open_block_depth,
+            line_number,
+        );
     }
 
     // see if we can add a new item to the list
@@ -63,41 +72,17 @@ fn check_continuation_conditions(
                     break 'outer;
                 }
                 let i = space_indent_count(line, offset);
-                if line.len() <= *offset + i || i > 3 {
-                    break;
-                }
-                if line[*offset + i] == '>' {
-                    //bounds check
-                    println!("bq cc passed!");
-                    if line.len() <= *offset + i + 1 {
-                        *offset += i + 1;
+                match block_quote_encountered(line, *offset, i) {
+                    Some(offset_dif) => {
+                        *offset += offset_dif;
                         *open_block_depth += 1;
                         match blocks.last() {
                             None => break 'outer,
-                            Some(b) => {
-                                current_block = b;
-                            }
-                        }
-                        continue 'outer;
-                    }
-                    if line[*offset + i + 1] == ' ' {
-                        *offset += i + 2;
-                    } else {
-                        *offset += i + 1;
-                    }
-                    *open_block_depth += 1;
-                    match blocks.last() {
-                        None => break 'outer,
-                        Some(b) => {
-                            current_block = b;
+                            Some(b) => current_block = b,
                         }
                     }
-                    continue 'outer;
+                    None => break 'outer,
                 }
-                if line[*offset + i] != ' ' {
-                    break;
-                }
-                break;
             }
             List(list_items, _, _) => {
                 *open_block_depth += 1;
@@ -139,8 +124,10 @@ fn check_continuation_conditions(
                 *open_block_depth += 1;
                 break;
             }
-            FencedCodeBlock(items, tic, tic_count, indent_count) => {
-                *open_block_depth += 1;
+            FencedCodeBlock(_, is_open, _, _, _, _) => {
+                if *is_open {
+                    *open_block_depth += 1;
+                }
                 break;
             }
             HTMLBlock(items) => todo!(),
@@ -249,25 +236,28 @@ fn space_indent_count(line: &Vec<char>, offset: &usize) -> usize {
     line.iter().skip(*offset).take_while(|c| **c == ' ').count()
 }
 
-fn list_item_encountered(line: &Vec<char>, offset: &usize) -> Option<(ListType, Block, usize)> {
-    let i = space_indent_count(line, offset);
-    if line.len() <= *offset + i || i > 3 {
+fn list_item_encountered(
+    line: &Vec<char>,
+    offset: usize,
+    i: usize,
+) -> Option<(ListType, Block, usize)> {
+    if line.len() <= offset + i || i > 3 {
         return None;
     }
-    if line[*offset + i].is_numeric() {
-        let mut number_builder = String::from(line[*offset + i]);
+    if line[offset + i].is_numeric() {
+        let mut number_builder = String::from(line[offset + i]);
         for j in 1..10 {
-            if line.len() <= *offset + i + j {
+            if line.len() <= offset + i + j {
                 return None;
             }
-            if line[*offset + i + j].is_numeric() {
-                number_builder.push(line[*offset + i + j]);
+            if line[offset + i + j].is_numeric() {
+                number_builder.push(line[offset + i + j]);
                 continue;
             }
-            if ".)".contains(line[*offset + i + j]) || line[*offset + i + j + 1] == ' ' {
-                if line.len() == *offset + i + j + 1 {
+            if ".)".contains(line[offset + i + j]) || line[offset + i + j + 1] == ' ' {
+                if line.len() == offset + i + j + 1 {
                     return Some((
-                        OrderedList(line[*offset + i + j], number_builder.parse().unwrap()),
+                        OrderedList(line[offset + i + j], number_builder.parse().unwrap()),
                         ListItem(vec![], i + j + 2),
                         i + j + 2,
                     ));
@@ -276,10 +266,10 @@ fn list_item_encountered(line: &Vec<char>, offset: &usize) -> Option<(ListType, 
             return None;
         }
     }
-    if "-+*".contains(line[*offset + i]) {
-        if line.len() == *offset + i + 1 || line[*offset + i + 1] == ' ' {
+    if "-+*".contains(line[offset + i]) {
+        if line.len() == offset + i + 1 || line[offset + i + 1] == ' ' {
             return Some((
-                UnorderedList(line[*offset + i]),
+                UnorderedList(line[offset + i]),
                 ListItem(vec![], i + 2),
                 i + 2,
             ));
@@ -289,18 +279,114 @@ fn list_item_encountered(line: &Vec<char>, offset: &usize) -> Option<(ListType, 
     None
 }
 
+fn block_quote_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<usize> {
+    if line.len() <= offset + i || i > 3 {
+        return None;
+    }
+    if line[offset + i] == '>' {
+        //bounds check
+        if line.len() <= offset + i + 1 {
+            return Some(i + 1);
+        }
+        if line[offset + i + 1] == ' ' {
+            return Some(i + 2);
+        } else {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+fn fenced_code_block_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<Block> {
+    if line.len() <= offset + i + 2 || i > 3 {
+        return None;
+    }
+    let t = line[offset + i];
+    if "~`".contains(t) {
+        let tick_count = line
+            .iter()
+            .skip(offset + i)
+            .take_while(|c| **c == t)
+            .count();
+        if tick_count >= 3 {
+            if t == '`' {
+                if line.iter().skip(offset + i + tick_count).any(|c| *c == '`') {
+                    return None;
+                }
+            }
+            let info_string: Vec<char> = line
+                .iter()
+                .skip(offset + i + tick_count)
+                .skip_while(|c| **c == ' ')
+                .take_while(|c| **c != ' ')
+                .map(|c| *c)
+                .collect();
+            return Some(FencedCodeBlock(vec![], true, t, info_string, i, tick_count));
+        }
+    }
+    return None;
+}
+
+fn atx_heading_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<Block> {
+    if line.len() <= offset + i || i > 3 {
+        return None;
+    }
+    let t = line[offset + i];
+    if t == '#' {
+        let pound_count = line
+            .iter()
+            .skip(offset + i)
+            .take_while(|c| **c == '#')
+            .count();
+        if line.len() <= offset + i + pound_count {
+            return Some(ATXHeading(vec![], pound_count));
+        }
+        if pound_count <= 6 && line[offset + i + pound_count] == ' ' {
+            return Some(ATXHeading(
+                vec![parse_inline(line, offset + i + pound_count)],
+                pound_count,
+            ));
+        }
+    }
+    None
+}
+
+fn close_unmatched_and_paragraph(block: &mut Block, line_number: usize) {
+    todo!()
+}
+
+// gets rid of initial and final spaces
+fn parse_inline(line: &Vec<char>, offset: usize) -> InlineContent {
+    let mut text: Vec<char> = vec![];
+    line.iter()
+        .take(offset)
+        .take_while(|c| **c == ' ')
+        .fold(0, |space_count, c| {
+            if *c != ' ' {
+                for i in 0..space_count {
+                    text.push(' ');
+                }
+                text.push(*c);
+                return 0;
+            }
+            return space_count + 1;
+        });
+    Text(text)
+}
+
 fn create_new_block_starts(
     document: &mut Block,
     line: &Vec<char>,
     offset: &mut usize,
     obd: &mut usize,
+    line_number: usize,
 ) {
     match document.get_block(*obd) {
         IndentedCodeBlock(_) => return, // go to parse this as plain text, no changes
         _ => (),
     }
 
-    let i = space_indent_count(line, offset);
+    let mut i = space_indent_count(line, offset);
     dbg!(&offset);
     dbg!(i);
     if line.len() <= *offset + i {
@@ -365,7 +451,7 @@ fn create_new_block_starts(
         let count = non_space.clone().count();
         dbg!(*obd);
         if count >= 3 && non_space.all(|k| *k == c) {
-            match dbg!(document.get_general_container(*obd)) {
+            match dbg!(document.get_general_container(*obd)).0 {
                 Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
                     blocks.push(ThematicBreak);
                     *offset = line.len() - 1;
@@ -383,15 +469,17 @@ fn create_new_block_starts(
     };
 
     if last_block_list.is_some() {
-        match list_item_encountered(line, offset) {
+        match list_item_encountered(line, *offset, i) {
             Some((lt, li, offset_dif)) => {
-                if last_block_list.unwrap() == lt {
-                    *offset += offset_dif;
+                if last_block_list.unwrap().same_list_eq(&lt) {
+                    close_unmatched_and_paragraph(document, 0);
                     match document.get_block(*obd) {
                         List(blocks, _, _) => blocks.push(li),
                         _ => unreachable!(),
                     }
                     *obd += 1;
+                    i = space_indent_count(line, offset);
+                    *offset += offset_dif;
                     unmatched_closed = true;
                 }
             }
@@ -399,6 +487,75 @@ fn create_new_block_starts(
         }
     }
 
+    // keep looking for new block starts
+    loop {
+        if let Some((lt, list_item_block, offset_dif)) = list_item_encountered(line, *offset, i) {
+            if open_par_above {
+                match lt {
+                    OrderedList(_, 1) => (),
+                    OrderedList(_, _) => break,
+                    _ => (),
+                }
+            } // only ordered lists starting with 1 can interrupt paragraphs
+            close_unmatched_and_paragraph(document, line_number);
+            let (parent, new_obd) = document.get_general_container(*obd);
+            match parent {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                    blocks.push(List(vec![list_item_block], true, lt));
+                    *obd = new_obd + 2;
+                    *offset += offset_dif;
+                    i = space_indent_count(line, offset);
+                    continue;
+                }
+                _ => unreachable!(),
+            }
+        }
+        if let Some(offset_dif) = block_quote_encountered(line, *offset, i) {
+            close_unmatched_and_paragraph(document, line_number);
+            let (parent, new_obd) = document.get_general_container(*obd);
+            match parent {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                    blocks.push(BlockQuote(vec![], true));
+                    *obd = new_obd + 1;
+                    *offset += offset_dif;
+                    i = space_indent_count(line, offset);
+                    continue;
+                }
+                _ => unreachable!(),
+            }
+        }
+        if let Some(fcb) = fenced_code_block_encountered(line, *offset, i) {
+            close_unmatched_and_paragraph(document, line_number);
+            let (parent, new_obd) = document.get_general_container(*obd);
+            match parent {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                    blocks.push(fcb);
+                    *obd = new_obd + 1;
+                    return;
+                }
+                _ => unreachable!(),
+            }
+        }
+        if let Some(atxh) = atx_heading_encountered(line, *offset, i) {
+            close_unmatched_and_paragraph(document, line_number);
+            let (parent, new_obd) = document.get_general_container(*obd);
+            match parent {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                    blocks.push(atxh);
+                    *obd = new_obd + 1;
+                    return;
+                }
+                _ => unreachable!(),
+            }
+        }
+        break;
+    }
+
+    //now check if theres a paragrah we can continue lazily
+    let mut continuable_paragraph = match document.get_last_block() {
+        Paragraph(_, true) => true,
+        _ => false,
+    };
     if !open_par_above && i > 3 {
         // 4 lines of whitespace and no open paragrah above to "continue" with it
     }
@@ -414,7 +571,7 @@ fn test_cnbs(ast: &mut Block, line: &str, expected_ast: &mut Block, exp_offset: 
     let mut offset = 0;
     check_continuation_conditions(&ast, &line, &mut offset, &mut obd);
     println!("{:?}", obd);
-    create_new_block_starts(ast, &line, &mut offset, &mut obd);
+    create_new_block_starts(ast, &line, &mut offset, &mut obd, 0);
     assert_eq!((ast, offset), (expected_ast, exp_offset));
 }
 
@@ -422,12 +579,12 @@ fn test_cnbs(ast: &mut Block, line: &str, expected_ast: &mut Block, exp_offset: 
 fn test_cnbs_1() {
     test_cnbs(
         &mut Document(vec![BlockQuote(
-            vec![Paragraph(vec!['a', 'b'], true)],
+            vec![Paragraph(vec![Text(vec!['a', 'b'])], true)],
             true,
         )]),
         ">-",
         &mut Document(vec![BlockQuote(
-            vec![SetextHeading(vec!['a', 'b'], 2)],
+            vec![SetextHeading(vec![Text(vec!['a', 'b'])], 2)],
             true,
         )]),
         1,
@@ -437,9 +594,9 @@ fn test_cnbs_1() {
 #[test]
 fn test_cnbs_2() {
     test_cnbs(
-        &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+        &mut Document(vec![Paragraph(vec![Text(vec!['a', 'b'])], true)]),
         "-",
-        &mut Document(vec![SetextHeading(vec!['a', 'b'], 2)]),
+        &mut Document(vec![SetextHeading(vec![Text(vec!['a', 'b'])], 2)]),
         0,
     );
 }
@@ -447,9 +604,9 @@ fn test_cnbs_2() {
 #[test]
 fn test_cnbs_3() {
     test_cnbs(
-        &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+        &mut Document(vec![Paragraph(vec![Text(vec!['a', 'b'])], true)]),
         "=          ",
-        &mut Document(vec![SetextHeading(vec!['a', 'b'], 1)]),
+        &mut Document(vec![SetextHeading(vec![Text(vec!['a', 'b'])], 1)]),
         10,
     );
 }
@@ -457,9 +614,9 @@ fn test_cnbs_3() {
 #[test]
 fn test_cnbs_4() {
     test_cnbs(
-        &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+        &mut Document(vec![Paragraph(vec![Text(vec!['a', 'b'])], true)]),
         "- -",
-        &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+        &mut Document(vec![Paragraph(vec![Text(vec!['a', 'b'])], true)]),
         0,
     );
 }
@@ -468,12 +625,12 @@ fn test_cnbs_4() {
 fn test_cnbs_5() {
     test_cnbs(
         &mut Document(vec![BlockQuote(
-            vec![Paragraph(vec!['a', 'b'], true)],
+            vec![Paragraph(vec![Text(vec!['a', 'b'])], true)],
             false,
         )]),
         ">-",
         &mut Document(vec![BlockQuote(
-            vec![Paragraph(vec!['a', 'b'], true)],
+            vec![Paragraph(vec![Text(vec!['a', 'b'])], true)],
             false,
         )]),
         0,
@@ -484,12 +641,12 @@ fn test_cnbs_5() {
 fn test_cnbs_6() {
     test_cnbs(
         &mut Document(vec![BlockQuote(
-            vec![Paragraph(vec!['a', 'b'], true)],
+            vec![Paragraph(vec![Text(vec!['a', 'b'])], true)],
             true,
         )]),
         ">---",
         &mut Document(vec![BlockQuote(
-            vec![SetextHeading(vec!['a', 'b'], 2)],
+            vec![SetextHeading(vec![Text(vec!['a', 'b'])], 2)],
             true,
         )]),
         3,
@@ -500,12 +657,12 @@ fn test_cnbs_6() {
 fn test_cnbs_7() {
     test_cnbs(
         &mut Document(vec![BlockQuote(
-            vec![Paragraph(vec!['a', 'b'], true)],
+            vec![Paragraph(vec![Text(vec!['a', 'b'])], true)],
             true,
         )]),
         ">***",
         &mut Document(vec![BlockQuote(
-            vec![Paragraph(vec!['a', 'b'], true), ThematicBreak],
+            vec![Paragraph(vec![Text(vec!['a', 'b'])], true), ThematicBreak],
             true,
         )]),
         3,
