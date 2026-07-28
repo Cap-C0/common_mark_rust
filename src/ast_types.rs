@@ -5,22 +5,24 @@ use crate::ast_types::{Block::*, InlineContent::*, ListType::*};
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum InlineContent {
     Softbreak,
+    Linebreak,
     Text(Vec<char>),
 }
 
-type Inline = Vec<InlineContent>;
+pub type Inline = Vec<char>;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Block {
     Document(Vec<Block>),
     BlockQuote(Vec<Block>, bool),
     List(Vec<Block>, bool, ListType),
+    // (children, tight, lt)
     ListItem(Vec<Block>, usize),
     ATXHeading(Inline, usize),
     SetextHeading(Inline, usize),
     Paragraph(Inline, bool),
     ThematicBreak,
-    IndentedCodeBlock(Vec<char>),
+    IndentedCodeBlock(Vec<char>, usize), // unrealized blank line count
     FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
     // (contents, is_open, marking char, info_string, indend_count, tilde_count)
     HTMLBlock(Inline),
@@ -52,7 +54,6 @@ impl Block {
         let mut new_depth: usize = 0;
         let mut seen_list: bool = false;
         let mut current_block: &Block = self;
-        dbg!(open_block_depth);
         while new_depth < open_block_depth {
             match current_block {
                 Document(blocks) => match blocks.last() {
@@ -81,7 +82,7 @@ impl Block {
                 _ => break,
             }
         }
-        (self.get_block(dbg!(new_depth)), new_depth)
+        (self.get_block(new_depth), new_depth)
     }
 
     pub fn is_leaf(&self) -> bool {
@@ -143,96 +144,97 @@ impl ListType {
     }
 }
 
-#[test]
-fn test_get_block_1() {
-    let mut test_tree = Document(vec![BlockQuote(
-        vec![List(
-            vec![ListItem(vec![ThematicBreak], 2)],
-            true,
-            ListType::UnorderedList('*'),
-        )],
-        false,
-    )]);
-    let descension: usize = 4;
-    assert_eq!(test_tree.get_block(descension), &mut ThematicBreak)
-}
-
-#[test]
-fn test_get_block_2() {
-    let mut test_tree = Document(vec![
-        BlockQuote(
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_get_block_1() {
+        let mut test_tree = Document(vec![BlockQuote(
             vec![List(
                 vec![ListItem(vec![ThematicBreak], 2)],
                 true,
                 ListType::UnorderedList('*'),
             )],
             false,
-        ),
-        BlockQuote(vec![Paragraph(vec![Text(vec!['p', 'o'])], true)], true),
-    ]);
-    let descension = 1;
-    let bq = test_tree.get_block(descension);
-    match bq {
-        BlockQuote(v, _) => v.push(ThematicBreak),
-        _ => unreachable!(),
+        )]);
+        let descension: usize = 4;
+        assert_eq!(test_tree.get_block(descension), &mut ThematicBreak)
     }
-    assert_eq!(
-        test_tree.get_block(descension),
-        &mut BlockQuote(
-            vec![Paragraph(vec![Text(vec!['p', 'o'])], true), ThematicBreak],
-            true
-        ),
-    )
-}
 
-#[test]
-fn test_get_last_block_1() {
-    let mut test_tree = Document(vec![
-        BlockQuote(
-            vec![List(
-                vec![ListItem(vec![ThematicBreak], 2)],
-                true,
-                ListType::UnorderedList('*'),
-            )],
-            false,
-        ),
-        BlockQuote(vec![Paragraph(vec![Text(vec!['p', 'o'])], true)], true),
-    ]);
-    assert_eq!(
-        test_tree.get_last_block(),
-        &mut Paragraph(vec![Text(vec!['p', 'o'])], true)
-    )
-}
-
-#[test]
-fn test_get_last_block_2() {
-    let mut test_tree = Document(vec![]);
-    assert_eq!(test_tree.get_last_block(), &mut Document(vec![]))
-}
-
-#[test]
-fn test_get_last_general_container() {
-    let ast = &mut Document(vec![BlockQuote(
-        vec![List(
-            vec![ListItem(vec![ThematicBreak], 2)],
-            true,
-            UnorderedList('*'),
-        )],
-        true,
-    )]);
-    let depth = 2; // matched the list but not list item
-    assert_eq!(
-        ast.get_general_container(depth),
-        (
-            &mut BlockQuote(
+    #[test]
+    fn test_get_block_2() {
+        let mut test_tree = Document(vec![
+            BlockQuote(
                 vec![List(
                     vec![ListItem(vec![ThematicBreak], 2)],
                     true,
-                    UnorderedList('*'),
+                    ListType::UnorderedList('*'),
                 )],
-                true,
+                false,
             ),
-            1
+            BlockQuote(vec![Paragraph(vec!['p', 'o'], true)], true),
+        ]);
+        let descension = 1;
+        let bq = test_tree.get_block(descension);
+        match bq {
+            BlockQuote(v, _) => v.push(ThematicBreak),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            test_tree.get_block(descension),
+            &mut BlockQuote(vec![Paragraph(vec!['p', 'o'], true), ThematicBreak], true),
         )
-    )
+    }
+
+    #[test]
+    fn test_get_last_block_1() {
+        let mut test_tree = Document(vec![
+            BlockQuote(
+                vec![List(
+                    vec![ListItem(vec![ThematicBreak], 2)],
+                    true,
+                    ListType::UnorderedList('*'),
+                )],
+                false,
+            ),
+            BlockQuote(vec![Paragraph(vec!['p', 'o'], true)], true),
+        ]);
+        assert_eq!(
+            test_tree.get_last_block(),
+            &mut Paragraph(vec!['p', 'o'], true)
+        )
+    }
+
+    #[test]
+    fn test_get_last_block_2() {
+        let mut test_tree = Document(vec![]);
+        assert_eq!(test_tree.get_last_block(), &mut Document(vec![]))
+    }
+
+    #[test]
+    fn test_get_last_general_container() {
+        let ast = &mut Document(vec![BlockQuote(
+            vec![List(
+                vec![ListItem(vec![ThematicBreak], 2)],
+                true,
+                UnorderedList('*'),
+            )],
+            true,
+        )]);
+        let depth = 2; // matched the list but not list item
+        assert_eq!(
+            ast.get_general_container(depth),
+            (
+                &mut BlockQuote(
+                    vec![List(
+                        vec![ListItem(vec![ThematicBreak], 2)],
+                        true,
+                        UnorderedList('*'),
+                    )],
+                    true,
+                ),
+                1
+            )
+        )
+    }
 }
