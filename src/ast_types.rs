@@ -22,7 +22,7 @@ pub enum Block {
     SetextHeading(Inline, usize),
     Paragraph(Inline, bool),
     ThematicBreak,
-    IndentedCodeBlock(Vec<char>, usize), // unrealized blank line count
+    IndentedCodeBlock(Vec<char>, Vec<usize>), // unrealized blank line count with space count
     FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
     // (contents, is_open, marking char, info_string, indend_count, tilde_count)
     HTMLBlock(Inline),

@@ -73,7 +73,7 @@ fn check_continuation_conditions(
                 if !*is_open {
                     break 'outer;
                 }
-                let i = space_indent_count(line, offset);
+                let i = space_indent_count(line, *offset);
                 match block_quote_encountered(line, *offset, i) {
                     Some(offset_dif) => {
                         *offset += offset_dif;
@@ -118,7 +118,7 @@ fn check_continuation_conditions(
             }
             ThematicBreak => break,
             IndentedCodeBlock(_, _) => {
-                let i = space_indent_count(line, offset);
+                let i = space_indent_count(line, *offset);
                 if line.len() <= *offset + i || i < 4 {
                     break;
                 }
@@ -138,8 +138,8 @@ fn check_continuation_conditions(
 }
 
 fn is_blank_line(line: &Vec<char>, offset: usize) -> bool {
-    line.iter()
-        .skip(offset)
+    line[..offset]
+        .iter()
         .all(|c| *c == ' ' || *c == char::from_u32(0x09).unwrap())
 }
 
@@ -239,8 +239,8 @@ mod cc_tests {
     }
 }
 
-fn space_indent_count(line: &Vec<char>, offset: &usize) -> usize {
-    line.iter().skip(*offset).take_while(|c| **c == ' ').count()
+fn space_indent_count(line: &Vec<char>, offset: usize) -> usize {
+    line[..offset].iter().take_while(|c| **c == ' ').count()
 }
 
 fn list_item_encountered(
@@ -262,14 +262,22 @@ fn list_item_encountered(
                 continue;
             }
             if ".)".contains(line[offset + i + j]) {
-                if line.len() <= offset + i + j + 1 {
+                let following_space_count = space_indent_count(line, offset + i + j);
+                if line.len() == offset + i + j + following_space_count {
                     return Some((
                         OrderedList(line[offset + i + j], number_builder.parse().unwrap()),
                         ListItem(vec![], i + j + 2),
                         i + j + 2,
                     ));
                 }
-                if line[offset + i + j + 1] == ' ' {
+                if 1 <= following_space_count && following_space_count <= 4 {
+                    return Some((
+                        OrderedList(line[offset + i + j], number_builder.parse().unwrap()),
+                        ListItem(vec![], i + j + 1 + following_space_count),
+                        i + j + 1 + following_space_count,
+                    ));
+                }
+                if following_space_count > 4 {
                     return Some((
                         OrderedList(line[offset + i + j], number_builder.parse().unwrap()),
                         ListItem(vec![], i + j + 2),
@@ -281,7 +289,23 @@ fn list_item_encountered(
         }
     }
     if "-+*".contains(line[offset + i]) {
-        if line.len() == offset + i + 1 || line[offset + i + 1] == ' ' {
+        let following_space_count = line[offset + i..].iter().take_while(|c| **c == ' ').count();
+        if line.len() == offset + i + following_space_count {
+            // ie, the rest of the line is blank
+            return Some((
+                UnorderedList(line[offset + i]),
+                ListItem(vec![], i + 2),
+                i + 2,
+            ));
+        }
+        if 1 <= following_space_count && following_space_count <= 4 {
+            return Some((
+                UnorderedList(line[offset + i]),
+                ListItem(vec![], i + 1 + following_space_count),
+                i + 1 + following_space_count,
+            ));
+        }
+        if following_space_count > 4 {
             return Some((
                 UnorderedList(line[offset + i]),
                 ListItem(vec![], i + 2),
@@ -317,20 +341,15 @@ fn fenced_code_block_encountered(line: &Vec<char>, offset: usize, i: usize) -> O
     }
     let t = line[offset + i];
     if "~`".contains(t) {
-        let tick_count = line
-            .iter()
-            .skip(offset + i)
-            .take_while(|c| **c == t)
-            .count();
+        let tick_count = line[..offset + i].iter().take_while(|c| **c == t).count();
         if tick_count >= 3 {
             if t == '`' {
-                if line.iter().skip(offset + i + tick_count).any(|c| *c == '`') {
+                if line[..offset + i + tick_count].iter().any(|c| *c == '`') {
                     return None;
                 }
             }
-            let info_string: Vec<char> = line
+            let info_string: Vec<char> = line[..offset + i + tick_count]
                 .iter()
-                .skip(offset + i + tick_count)
                 .skip_while(|c| **c == ' ')
                 .take_while(|c| **c != ' ')
                 .map(|c| *c)
@@ -347,18 +366,14 @@ fn atx_heading_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<
     }
     let t = line[offset + i];
     if t == '#' {
-        let pound_count = line
-            .iter()
-            .skip(offset + i)
-            .take_while(|c| **c == '#')
-            .count();
+        let pound_count = line[..offset + i].iter().take_while(|c| **c == '#').count();
         if line.len() <= offset + i + pound_count {
             return Some(ATXHeading(vec![], pound_count));
         }
         if pound_count <= 6 && line[offset + i + pound_count] == ' ' {
             let mut inline_text: Vec<char> = vec![];
             dbg!(pound_count);
-            line.iter().skip(offset + i + pound_count).fold(
+            line[..offset + i + pound_count].iter().fold(
                 (0, 0, 0),
                 |(pre_space, close_pounds, post_space), c| {
                     if *c == '#' {
@@ -404,13 +419,50 @@ fn create_new_block_starts(
     obd: &mut usize,
     line_number: usize,
 ) {
+    let mut pre_space_count = space_indent_count(line, *offset);
     match document.get_block(*obd) {
-        IndentedCodeBlock(_, _) => return, // go to parse this as plain text, no changes
+        IndentedCodeBlock(chars, spaces) => {
+            if is_blank_line(line, *offset) {
+                spaces.push(line.len() - *offset);
+            } else {
+                for s in spaces {
+                    chars.push('\n');
+                    for _ in 0..*s {
+                        chars.push(' ');
+                    }
+                }
+                chars.push('\n');
+                chars.append(&mut line[..*offset].iter().map(|c| *c).collect());
+            }
+        }
+        FencedCodeBlock(chars, is_open @ true, marker, _, indent_count, marker_count) => {
+            match fenced_code_block_encountered(line, *offset, pre_space_count) {
+                Some(FencedCodeBlock(_, _, t, infstr, _, tc)) => {
+                    if t == *marker && infstr.len() == 0 && tc >= *marker_count {
+                        *is_open = false;
+                        *offset = line.len();
+                        *obd -= 1;
+                        return;
+                    }
+                }
+                _ => (),
+            }
+            chars.append(
+                &mut line[..(*offset
+                    + if pre_space_count > *indent_count {
+                        *indent_count
+                    } else {
+                        pre_space_count
+                    })]
+                    .iter()
+                    .map(|c| *c)
+                    .collect(),
+            );
+        }
         _ => (),
     }
 
-    let mut i = space_indent_count(line, offset);
-    if line.len() <= *offset + i {
+    if line.len() <= *offset + pre_space_count {
         todo!();
     }
     let mut unmatched_closed = false;
@@ -425,15 +477,14 @@ fn create_new_block_starts(
     };
 
     // c is first non space character after offset
-    let mut c = dbg!(line[*offset + i]);
+    let mut c = dbg!(line[*offset + pre_space_count]);
 
     // First check for SetextHeading
-    if open_par_above && i <= 3 {
+    if open_par_above && pre_space_count <= 3 {
         if "-=".contains(c) {
             // the line is of the form "[pre-matched-structure][1-3 space]c*' '*"
-            if line
+            if line[..*offset + pre_space_count]
                 .iter()
-                .skip(*offset + i)
                 .skip_while(|k| **k == c)
                 .skip_while(|k| **k == ' ')
                 .count()
@@ -464,8 +515,8 @@ fn create_new_block_starts(
     }
 
     // next check for thematic break
-    if "-*_".contains(c) && i <= 3 {
-        let mut non_space = line.iter().skip(*offset).filter(|k| **k != ' ');
+    if "-*_".contains(c) && pre_space_count <= 3 {
+        let mut non_space = line[..*offset].iter().filter(|k| **k != ' ');
         let count = non_space.clone().count();
         if count >= 3 && non_space.all(|k| *k == c) {
             match dbg!(document.get_general_container(*obd)).0 {
@@ -487,7 +538,7 @@ fn create_new_block_starts(
 
     if last_block_list.is_some() {
         dbg!(last_block_list);
-        match dbg!(list_item_encountered(line, *offset, i)) {
+        match dbg!(list_item_encountered(line, *offset, pre_space_count)) {
             Some((lt, li, offset_dif)) => {
                 if last_block_list.unwrap().same_list_eq(&dbg!(lt)) {
                     close_unmatched_and_paragraph(document, 0);
@@ -496,7 +547,7 @@ fn create_new_block_starts(
                         _ => unreachable!(),
                     }
                     *obd += 1;
-                    i = space_indent_count(line, offset);
+                    pre_space_count = space_indent_count(line, *offset);
                     *offset += offset_dif;
                     unmatched_closed = true;
                 }
@@ -507,7 +558,9 @@ fn create_new_block_starts(
 
     // keep looking for new block starts
     loop {
-        if let Some((lt, list_item_block, offset_dif)) = list_item_encountered(line, *offset, i) {
+        if let Some((lt, list_item_block, offset_dif)) =
+            list_item_encountered(line, *offset, pre_space_count)
+        {
             if open_par_above {
                 match lt {
                     OrderedList(_, 1) => (),
@@ -522,13 +575,13 @@ fn create_new_block_starts(
                     blocks.push(List(vec![list_item_block], true, lt));
                     *obd = new_obd + 2;
                     *offset += offset_dif;
-                    i = space_indent_count(line, offset);
+                    pre_space_count = space_indent_count(line, *offset);
                     continue;
                 }
                 _ => unreachable!(),
             }
         }
-        if let Some(offset_dif) = block_quote_encountered(line, *offset, i) {
+        if let Some(offset_dif) = block_quote_encountered(line, *offset, pre_space_count) {
             close_unmatched_and_paragraph(document, line_number);
             let (parent, new_obd) = document.get_general_container(*obd);
             match parent {
@@ -536,13 +589,13 @@ fn create_new_block_starts(
                     blocks.push(BlockQuote(vec![], true));
                     *obd = new_obd + 1;
                     *offset += offset_dif;
-                    i = space_indent_count(line, offset);
+                    pre_space_count = space_indent_count(line, *offset);
                     continue;
                 }
                 _ => unreachable!(),
             }
         }
-        if let Some(fcb) = fenced_code_block_encountered(line, *offset, i) {
+        if let Some(fcb) = fenced_code_block_encountered(line, *offset, pre_space_count) {
             close_unmatched_and_paragraph(document, line_number);
             let (parent, new_obd) = document.get_general_container(*obd);
             match parent {
@@ -555,7 +608,7 @@ fn create_new_block_starts(
                 _ => unreachable!(),
             }
         }
-        if let Some(atxh) = atx_heading_encountered(line, *offset, i) {
+        if let Some(atxh) = atx_heading_encountered(line, *offset, pre_space_count) {
             close_unmatched_and_paragraph(document, line_number);
             let (parent, new_obd) = document.get_general_container(*obd);
             match parent {
@@ -572,23 +625,21 @@ fn create_new_block_starts(
     }
 
     // its a blank line from here on out
-    if line.len() <= *offset + i {
+    if line.len() <= *offset + pre_space_count {
         *offset = line.len();
         return;
     }
 
     //now check if theres a paragraph we can continue lazily
     match document.get_last_block() {
-        Paragraph(inline, b @ true) => {
+        Paragraph(inline, true) => {
+            inline.push('\n');
             inline.append(
-                &mut line
+                &mut line[..*offset + pre_space_count]
                     .iter()
-                    .skip(*offset)
-                    .skip_while(|c| **c == ' ')
                     .map(|c| *c)
                     .collect(),
             );
-            inline.push('\n');
             *offset = line.len();
             return;
         }
@@ -596,12 +647,12 @@ fn create_new_block_starts(
     }
 
     // if theres no paragraph to continue, check to create an indented code block
-    if i >= 4 {
+    if pre_space_count >= 4 {
         match document.get_general_container(*obd).0 {
             Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
                 blocks.push(IndentedCodeBlock(
-                    line.iter().skip(*offset + 4).map(|c| *c).collect(),
-                    0,
+                    line[..*offset + 4].iter().map(|c| *c).collect(),
+                    vec![],
                 ));
                 *offset = line.len();
                 return;
@@ -614,8 +665,8 @@ fn create_new_block_starts(
     match document.get_general_container(*obd).0 {
         Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
             blocks.push(Paragraph(
-                chain(line, vec![&'\n'])
-                    .skip(*offset)
+                line[..*offset]
+                    .iter()
                     .skip_while(|c| **c == ' ')
                     .map(|c| *c)
                     .collect(),
