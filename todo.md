@@ -1,8 +1,10 @@
 - [ ] new block starts
-  - [ ] setext heading
-  - [ ] thematic break
-  - [ ] new list item continuing
-  - [ ] quotes
-  - [ ] new list
-  - [ ] lazy paragraph continuation
-  - [ ] reference link defs
+  - [x] setext heading
+  - [x] thematic break
+  - [x] new list item continuing
+  - [x] quotes
+  - [x] new list
+  - [x] fenced code blocks
+  - [x] atx_heading
+  - [x] lazy paragraph continuation
+  - [x] reference link defs

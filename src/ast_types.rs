@@ -1,6 +1,4 @@
-use std::ops::ControlFlow::Break;
-
-use crate::ast_types::{Block::*, InlineContent::*, ListType::*};
+use crate::ast_types::{Block::*, ListType::*};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum InlineContent {
@@ -89,6 +87,18 @@ impl Block {
         match self {
             Document(_) | BlockQuote(_, _) | List(_, _, _) | ListItem(_, _) => false,
             _ => true,
+        }
+    }
+
+    pub fn close_open_block(&mut self) {
+        match self {
+            Document(blocks) | List(blocks, _, _) | ListItem(blocks, _) => {
+                if !blocks.is_empty() {
+                    blocks.last_mut().unwrap().close_open_block()
+                }
+            }
+            BlockQuote(_, is_open) => *is_open = false,
+            _ => (),
         }
     }
 
