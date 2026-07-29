@@ -4,11 +4,25 @@ use crate::InlineContent::*;
 use crate::ListType::*;
 use crate::ast_types::InlineContent::*;
 use crate::ast_types::*;
+use std::collections::HashMap;
 use std::hint::black_box;
 use std::iter::chain;
 use std::mem;
 use std::sync::TryLockError::Poisoned;
 pub mod ast_types;
+
+fn is_ascii_punctuation(c: char) -> bool {
+    let n = c as u32;
+    (0x21 <= n && n <= 0x25)
+        || (0x31 <= n && n <= 0x40)
+        || (0x5B <= n && n <= 0x60)
+        || (0x7B <= n && n <= 0x7E)
+}
+
+fn is_ascii_control(c: char) -> bool {
+    let n = c as u32;
+    (0x00 <= n && n <= 0x1F) || (0x7F <= n && n <= 0x7F)
+}
 
 pub fn markdown_to_html(markdown: &str) -> String {
     // first split into lines
@@ -30,6 +44,7 @@ pub fn markdown_to_html(markdown: &str) -> String {
 
     // 1st create block structure of document
     let mut document = Document(vec![]);
+    let mut lrd_table: HashMap<Vec<char>, (Vec<char>, Vec<char>)> = HashMap::new();
 
     for (line_number, line) in lines.iter().enumerate() {
         // first check continuation conditions
@@ -44,6 +59,7 @@ pub fn markdown_to_html(markdown: &str) -> String {
             &mut offset,
             &mut open_block_depth,
             line_number,
+            &mut lrd_table,
         );
     }
 
@@ -92,12 +108,21 @@ fn check_continuation_conditions(
                 current_block = list_items.last().unwrap();
             }
             ListItem(blocks, indent_amount) => {
-                for i in 0..*indent_amount {
-                    if line.len() <= *offset + i || line[*offset + i] != ' ' {
+                let mut i = 0;
+                'inner: while i < *indent_amount {
+                    if line.len() <= *offset + i {
+                        break 'inner;
+                    }
+                    if line[*offset + i] != ' ' {
                         break 'outer;
                     }
+                    i += 1;
                 }
-                *offset += *indent_amount;
+                if is_blank_line(line, *offset + i) {
+                    *offset = line.len(); // a blank line is auto allowed to match
+                } else {
+                    *offset += *indent_amount;
+                }
                 *open_block_depth += 1;
                 match blocks.last() {
                     None => break 'outer,
@@ -109,9 +134,7 @@ fn check_continuation_conditions(
             ATXHeading(_, _) => break, // no additional context on the newline after a heading should change the heading
             SetextHeading(_, _) => break,
             Paragraph(_, is_open) => {
-                println!("{}", is_blank_line(line, *offset));
-                if !is_blank_line(line, *offset) && *is_open {
-                    println!("paragraph cc matched!");
+                if *is_open {
                     *open_block_depth += 1;
                 }
                 break;
@@ -119,10 +142,10 @@ fn check_continuation_conditions(
             ThematicBreak => break,
             IndentedCodeBlock(_, _) => {
                 let i = space_indent_count(line, *offset);
-                if line.len() <= *offset + i || i < 4 {
+                if line.len() > *offset + i && i < 4 {
                     break;
                 }
-                *offset += 4;
+                *offset += std::cmp::min(4, line.len() - (*offset + i));
                 *open_block_depth += 1;
                 break;
             }
@@ -410,7 +433,190 @@ fn atx_heading_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<
     None
 }
 
-fn close_unmatched_and_paragraph(block: &mut Block, line_number: usize) {}
+fn close_paragraphs(
+    document: &mut Block,
+    open_par_above: &mut bool,
+    open_par_exists: &mut bool,
+    lrd_table: &mut HashMap<Vec<char>, (Vec<char>, Vec<char>)>,
+) {
+    if !*open_par_exists {
+        return;
+    } //no paragraph to close, job done.
+
+    match document.get_last_block() {
+        Paragraph(chars, b @ true) => {
+            let mut chars_iter = chars.iter().enumerate().peekable();
+            let mut def_added = false;
+            let mut characters_eaten: usize = 0;
+            'collect_lrds: loop {
+                let (mut link_lab, mut link_dest, mut link_tit): (Vec<char>, Vec<char>, Vec<char>) =
+                    (vec![], vec![], vec![]);
+                let mut link_lab_found = false;
+                if let Some((start_count, '[')) = chars_iter.next() {
+                    chars_iter
+                        .skip_while(|(i, &c)| (c == '\n' || c == ' ') && *i - start_count <= 1000);
+                    if let Some((i, &c)) = chars_iter.next() {
+                        if c == ']' {
+                            break 'collect_lrds;
+                        }
+                        if i - start_count >= 1000 {
+                            break 'collect_lrds;
+                        }
+                        link_lab.push(c);
+                    }
+                    for (i, &c) in chars_iter {
+                        if i - start_count >= 1000 {
+                            break 'collect_lrds;
+                        }
+                        if c == '\\' {
+                            if i - (start_count + 1) >= 1000 {
+                                break 'collect_lrds;
+                            }
+                            if let Some((i, &c_nxt)) = chars_iter.next() {
+                                if i - start_count >= 1000 {
+                                    break 'collect_lrds;
+                                }
+                                if !is_ascii_punctuation(c_nxt) {
+                                    link_lab.push(c);
+                                }
+                                link_lab.push(c_nxt);
+                                continue;
+                            } else {
+                                break 'collect_lrds;
+                            }
+                        }
+                        if c == '[' {
+                            break 'collect_lrds;
+                        }
+                        if c == ']' {
+                            if let Some((i, &c_nxt)) = chars_iter.next() {
+                                if c_nxt == ':' {
+                                    link_lab_found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        link_lab.push(c);
+                    }
+                }
+
+                if !link_lab_found {
+                    break 'collect_lrds;
+                }
+
+                chars_iter.skip_while(|(i, c)| **c == '\n' || **c == ' ');
+
+                let mut link_dest_found = false;
+                let mut space_follow = false;
+
+                match chars_iter.next() {
+                    Some((_, &'<')) => {
+                        for (_, &c) in chars_iter {
+                            if c == '\\' {
+                                if let Some((_, &c_nxt)) = chars_iter.next() {
+                                    if c_nxt == '\n' {
+                                        break;
+                                    }
+                                    if !is_ascii_punctuation(c_nxt) {
+                                        link_dest.push(c);
+                                    }
+                                    link_dest.push(c_nxt);
+                                    continue;
+                                } else {
+                                    break 'collect_lrds;
+                                }
+                            }
+                            if c == '<' || c == '\n' {
+                                break;
+                            }
+                            if c == '>' {
+                                if let Some((_, &cnxt)) = chars_iter.peek() {
+                                    if "\n ".contains(cnxt) {
+                                        space_follow = true;
+                                    } else {
+                                        break 'collect_lrds; // this means there are non space
+                                        // seperated chars after the dest, so
+                                        // immediate fail.
+                                    }
+                                }
+                                link_dest_found = true;
+                                break;
+                            }
+                            link_dest.push(c);
+                        }
+                    }
+                    Some((_, &c)) => {
+                        if c == ')' {
+                            break 'collect_lrds;
+                        }
+                        link_dest.push(c);
+                        let mut p_stack = if c == '(' { 1 } else { 0 };
+                        for (_, &c) in chars_iter {
+                            if is_ascii_control(c) {
+                                break 'collect_lrds;
+                            }
+                            if c == ')' {
+                                if p_stack == 0 {
+                                    break 'collect_lrds;
+                                }
+                                p_stack -= 1;
+                            }
+                            if c == '(' {
+                                p_stack += 1;
+                            }
+                            if c == '\\' {
+                                if let Some((_, &c_nxt)) = chars_iter.next() {
+                                    if is_ascii_control(c_nxt) {
+                                        break 'collect_lrds;
+                                    }
+                                    if c_nxt == ' ' {
+                                        space_follow = true;
+                                        link_dest.push(c);
+                                        link_dest_found = p_stack == 0;
+                                        break;
+                                    }
+                                    if !is_ascii_punctuation(c_nxt) {
+                                        link_dest.push(c);
+                                    }
+                                    link_dest.push(c_nxt);
+                                } else {
+                                    break 'collect_lrds;
+                                }
+                            }
+                            if "\n ".contains(c) {
+                                space_follow = true;
+                                link_dest_found = p_stack == 0;
+                                break;
+                            }
+                            link_dest.push(c);
+                        }
+                    }
+                }
+
+                if !link_dest_found {
+                    break 'collect_lrds;
+                }
+
+                chars_iter.skip_while(|(_, &c)| c == ' ');
+
+                match chars_iter.next() {
+                    Some((eaten, '\n')) => {
+                        characters_eaten = eaten;
+                    }
+                    Some((_, '\'')) | Some((_, '\"')) | Some((_, '(')) => {}
+                }
+
+                let mut link_tit_found = false;
+
+                break 'collect_lrds;
+            }
+        }
+        _ => unreachable!(),
+    }
+
+    *open_par_above = false;
+    *open_par_exists = false;
+}
 
 fn create_new_block_starts(
     document: &mut Block,
@@ -418,6 +624,7 @@ fn create_new_block_starts(
     offset: &mut usize,
     obd: &mut usize,
     line_number: usize,
+    lrd_table: &mut HashMap<Vec<char>, (Vec<char>, Vec<char>)>,
 ) {
     let mut pre_space_count = space_indent_count(line, *offset);
     match document.get_block(*obd) {
@@ -465,15 +672,20 @@ fn create_new_block_starts(
     if line.len() <= *offset + pre_space_count {
         todo!();
     }
-    let mut unmatched_closed = false;
+
     // first check if we have a paragragh above for:
     // - setext heading creation
     // - lazy continuation
     // also check for if it matches a leaf node, which indicates that the last matched
     // Container node is the leaf-1
-    let (open_par_above, ends_in_leaf): (bool, bool) = match document.get_block(*obd) {
-        Paragraph(_, open) => (*open, true),
-        b => (false, b.is_leaf()),
+    let mut open_par_above = match document.get_block(*obd) {
+        Paragraph(_, open) => *open,
+        b => false,
+    };
+
+    let mut open_par_exists = match document.get_last_block() {
+        Paragraph(_, open) => *open,
+        _ => false,
     };
 
     // c is first non space character after offset
@@ -541,7 +753,12 @@ fn create_new_block_starts(
         match dbg!(list_item_encountered(line, *offset, pre_space_count)) {
             Some((lt, li, offset_dif)) => {
                 if last_block_list.unwrap().same_list_eq(&dbg!(lt)) {
-                    close_unmatched_and_paragraph(document, 0);
+                    close_paragraphs(
+                        document,
+                        &mut open_par_above,
+                        &mut open_par_exists,
+                        lrd_table,
+                    );
                     match document.get_block(*obd) {
                         List(blocks, _, _) => blocks.push(li),
                         _ => unreachable!(),
@@ -549,7 +766,6 @@ fn create_new_block_starts(
                     *obd += 1;
                     pre_space_count = space_indent_count(line, *offset);
                     *offset += offset_dif;
-                    unmatched_closed = true;
                 }
             }
             None => (),
@@ -568,7 +784,12 @@ fn create_new_block_starts(
                     _ => (),
                 }
             } // only ordered lists starting with 1 can interrupt paragraphs
-            close_unmatched_and_paragraph(document, line_number);
+            close_paragraphs(
+                document,
+                &mut open_par_above,
+                &mut open_par_exists,
+                lrd_table,
+            );
             let (parent, new_obd) = document.get_general_container(*obd);
             match parent {
                 Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
@@ -582,7 +803,12 @@ fn create_new_block_starts(
             }
         }
         if let Some(offset_dif) = block_quote_encountered(line, *offset, pre_space_count) {
-            close_unmatched_and_paragraph(document, line_number);
+            close_paragraphs(
+                document,
+                &mut open_par_above,
+                &mut open_par_exists,
+                lrd_table,
+            );
             let (parent, new_obd) = document.get_general_container(*obd);
             match parent {
                 Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
@@ -596,7 +822,12 @@ fn create_new_block_starts(
             }
         }
         if let Some(fcb) = fenced_code_block_encountered(line, *offset, pre_space_count) {
-            close_unmatched_and_paragraph(document, line_number);
+            close_paragraphs(
+                document,
+                &mut open_par_above,
+                &mut open_par_exists,
+                lrd_table,
+            );
             let (parent, new_obd) = document.get_general_container(*obd);
             match parent {
                 Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
@@ -609,7 +840,12 @@ fn create_new_block_starts(
             }
         }
         if let Some(atxh) = atx_heading_encountered(line, *offset, pre_space_count) {
-            close_unmatched_and_paragraph(document, line_number);
+            close_paragraphs(
+                document,
+                &mut open_par_above,
+                &mut open_par_exists,
+                lrd_table,
+            );
             let (parent, new_obd) = document.get_general_container(*obd);
             match parent {
                 Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
@@ -688,7 +924,7 @@ mod cnbs_tests {
         let mut obd = 0;
         let mut offset = 0;
         check_continuation_conditions(&ast, &line, &mut offset, &mut obd);
-        create_new_block_starts(ast, &line, &mut offset, &mut obd, 0);
+        create_new_block_starts(ast, &line, &mut offset, &mut obd, 0, &mut HashMap::new());
         assert_eq!((ast, offset), (expected_ast, exp_offset));
     }
 
