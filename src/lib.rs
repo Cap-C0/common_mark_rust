@@ -57,6 +57,17 @@ pub fn markdown_to_html(markdown: &str) -> String {
         );
     }
 
+    let mut open_par_exists = match document.get_last_block() {
+        Paragraph(_, open) => *open,
+        _ => false,
+    };
+    close_paragraph(
+        &mut document,
+        &mut false,
+        &mut open_par_exists,
+        &mut lrd_table,
+    );
+
     // see if we can add a new item to the list
     todo!();
 }
@@ -155,7 +166,7 @@ fn check_continuation_conditions(
 }
 
 fn is_blank_line(line: &Vec<char>, offset: usize) -> bool {
-    line[..offset]
+    line[offset..]
         .iter()
         .all(|c| *c == ' ' || *c == char::from_u32(0x09).unwrap())
 }
@@ -257,7 +268,7 @@ mod cc_tests {
 }
 
 fn space_indent_count(line: &Vec<char>, offset: usize) -> usize {
-    line[..offset].iter().take_while(|c| **c == ' ').count()
+    line[offset..].iter().take_while(|c| **c == ' ').count()
 }
 
 fn list_item_encountered(
@@ -1041,13 +1052,17 @@ fn create_new_block_starts(
     // First check for SetextHeading
     if open_par_above && pre_space_count <= 3 {
         if "-=".contains(c) {
+            dbg!(&offset);
+            dbg!(pre_space_count);
+            dbg!(line[*offset + pre_space_count..].iter().count());
             // the line is of the form "[pre-matched-structure][1-3 space](-|=)*' '*"
-            if line[..*offset + pre_space_count]
-                .iter()
-                .skip_while(|k| **k == c)
-                .skip_while(|k| **k == ' ')
-                .count()
-                == 0
+            if dbg!(
+                line[*offset + pre_space_count..]
+                    .iter()
+                    .skip_while(|k| **k == c)
+                    .skip_while(|k| **k == ' ')
+                    .count()
+            ) == 0
             {
                 let mut h_text = vec![];
                 mem::swap(
@@ -1218,7 +1233,7 @@ fn create_new_block_starts(
         Paragraph(inline, true) => {
             inline.push('\n');
             inline.append(
-                &mut line[..*offset + pre_space_count]
+                &mut line[*offset + pre_space_count..]
                     .iter()
                     .map(|c| *c)
                     .collect(),
@@ -1234,7 +1249,7 @@ fn create_new_block_starts(
         match document.get_general_container(*obd).0 {
             Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
                 blocks.push(IndentedCodeBlock(
-                    line[..*offset + 4].iter().map(|c| *c).collect(),
+                    line[*offset + 4..].iter().map(|c| *c).collect(),
                     vec![],
                 ));
                 *offset = line.len();
@@ -1248,7 +1263,7 @@ fn create_new_block_starts(
     match document.get_general_container(*obd).0 {
         Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
             blocks.push(Paragraph(
-                line[..*offset]
+                line[*offset..]
                     .iter()
                     .skip_while(|c| **c == ' ')
                     .map(|c| *c)
@@ -1271,7 +1286,7 @@ mod cnbs_tests {
         let mut obd = 0;
         let mut offset = 0;
         check_continuation_conditions(&ast, &line, &mut offset, &mut obd);
-        create_new_block_starts(ast, &line, &mut offset, &mut obd, 0, &mut HashMap::new());
+        create_new_block_starts(ast, &line, &mut offset, &mut obd, &mut HashMap::new());
         assert_eq!((ast, offset), (expected_ast, exp_offset));
     }
 

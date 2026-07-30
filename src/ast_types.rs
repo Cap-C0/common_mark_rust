@@ -131,6 +131,91 @@ impl Block {
             };
         }
     }
+
+    pub fn to_html(&self) -> String {
+        let mut str_out = String::new();
+        self.to_html_helper(false, &mut str_out);
+        str_out
+    }
+
+    fn to_html_helper(&self, in_tight_list: bool, string_builder: &mut String) {
+        match self {
+            Document(blocks) => {
+                for b in blocks {
+                    b.to_html_helper(false, string_builder);
+                }
+            }
+            BlockQuote(blocks, _) => {
+                string_builder.push_str("<blockquote>\n");
+                for b in blocks {
+                    b.to_html_helper(false, string_builder);
+                }
+                string_builder.push_str("</blockquote>\n");
+            }
+            List(blocks, is_tight, list_type) => match list_type {
+                OrderedList(_, n) => {
+                    if *n != 1 {
+                        string_builder.push_str(&format!("<ol start=\"{}\">\n", n));
+                    } else {
+                        string_builder.push_str("<ol>\n");
+                    }
+                    for b in blocks {
+                        b.to_html_helper(*is_tight, string_builder);
+                    }
+                    string_builder.push_str("</ol>\n");
+                }
+                UnorderedList(_) => todo!(),
+            },
+            ListItem(blocks, _) => {
+                string_builder.push_str("<li>");
+                for b in blocks {
+                    b.to_html_helper(in_tight_list, string_builder);
+                }
+            }
+            ATXHeading(items, h) | SetextHeading(items, h) => {
+                string_builder.push_str(&format!("<h{}>", h));
+                for c in items {
+                    string_builder.push(*c);
+                }
+                string_builder.push_str(&format!("<h{}>", h));
+            }
+            Paragraph(items, _) => {
+                if !in_tight_list {
+                    string_builder.push_str("<p>");
+                }
+                for c in items {
+                    string_builder.push(*c);
+                }
+                if !in_tight_list {
+                    string_builder.push_str("</p>");
+                }
+            }
+            ThematicBreak => string_builder.push_str("<hr />\n"),
+            IndentedCodeBlock(items, items1) => {
+                string_builder.push_str("<pre><code>");
+                for c in items {
+                    string_builder.push(*c);
+                }
+                string_builder.push_str("\n<pre><code>\n");
+            }
+            FencedCodeBlock(items, _, _, lang_hint, _, _) => {
+                string_builder.push_str("<pre><code");
+                if lang_hint.len() > 0 {
+                    string_builder.push_str(" class=\"language-");
+                    for c in lang_hint {
+                        string_builder.push(*c);
+                    }
+                    string_builder.push('\"');
+                }
+                string_builder.push('>');
+                for c in items {
+                    string_builder.push(*c);
+                }
+                string_builder.push_str("\n<pre><code>\n");
+            }
+            HTMLBlock(items) => todo!(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
