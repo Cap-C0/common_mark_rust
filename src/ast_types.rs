@@ -16,8 +16,7 @@ pub enum Block {
     List(Vec<Block>, bool, ListType),
     // (children, tight, lt)
     ListItem(Vec<Block>, usize),
-    ATXHeading(Inline, usize),
-    SetextHeading(Inline, usize),
+    Heading(Inline, usize),
     Paragraph(Inline, bool),
     ThematicBreak,
     IndentedCodeBlock(Vec<char>, Vec<usize>), // unrealized blank line count with space count
@@ -172,7 +171,7 @@ impl Block {
                     b.to_html_helper(in_tight_list, string_builder);
                 }
             }
-            ATXHeading(items, h) | SetextHeading(items, h) => {
+            Heading(items, h) => {
                 string_builder.push_str(&format!("<h{}>", h));
                 for c in items {
                     string_builder.push(*c);
@@ -191,7 +190,7 @@ impl Block {
                 }
             }
             ThematicBreak => string_builder.push_str("<hr />\n"),
-            IndentedCodeBlock(items, items1) => {
+            IndentedCodeBlock(items, _items1) => {
                 string_builder.push_str("<pre><code>");
                 for c in items {
                     string_builder.push(*c);
@@ -213,7 +212,7 @@ impl Block {
                 }
                 string_builder.push_str("\n<pre><code>\n");
             }
-            HTMLBlock(items) => todo!(),
+            HTMLBlock(_items) => todo!(),
         }
     }
 }

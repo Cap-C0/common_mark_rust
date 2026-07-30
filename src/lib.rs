@@ -1,6 +1,7 @@
 use crate::Block::*;
 use crate::ListType::*;
 use crate::ast_types::*;
+use core::num;
 use std::collections::HashMap;
 use std::mem;
 pub mod ast_types;
@@ -136,8 +137,7 @@ fn check_continuation_conditions(
                     }
                 }
             }
-            ATXHeading(_, _) => break, // no additional context on the newline after a heading should change the heading
-            SetextHeading(_, _) => break,
+            Heading(_, _) => break,
             Paragraph(_, is_open) => {
                 if *is_open {
                     *open_block_depth += 1;
@@ -268,76 +268,104 @@ mod cc_tests {
 }
 
 fn space_indent_count(line: &Vec<char>, offset: usize) -> usize {
+    if offset >= line.len() {
+        return 0;
+    }
     line[offset..].iter().take_while(|c| **c == ' ').count()
+}
+
+fn thematic_break_encountered(
+    line: &Vec<char>,
+    offset: usize,
+    psc: usize, //preceding space count
+) -> bool {
+    if line.len() <= offset + psc + 2 || psc > 3 {
+        return false;
+    }
+    let c = line[offset + psc];
+    if "-*_".contains(c) {
+        let mut non_space = line[offset..].iter().filter(|k| **k != ' ');
+        let count = dbg!(non_space.clone().count());
+        return count >= 3 && dbg!(non_space.all(|k| *k == c));
+    }
+    false
 }
 
 fn list_item_encountered(
     line: &Vec<char>,
     offset: usize,
-    i: usize,
+    psc: usize, //preceding space count
 ) -> Option<(ListType, Block, usize)> {
-    if line.len() <= offset + i || i > 3 {
+    if line.len() <= offset + psc || psc > 3 {
         return None;
     }
-    if line[offset + i].is_numeric() {
-        let mut number_builder = String::from(line[offset + i]);
+    let c = dbg!(line[dbg!(offset + psc)]);
+    if c.is_numeric() {
+        let mut number_builder = String::from(line[offset + psc]);
         for j in 1..10 {
-            if line.len() <= offset + i + j {
+            if line.len() <= offset + psc + j {
                 return None;
             }
-            if line[offset + i + j].is_numeric() {
-                dbg!(&mut number_builder).push(line[offset + i + j]);
+            if line[offset + psc + j].is_numeric() {
+                dbg!(&mut number_builder).push(line[offset + psc + j]);
                 continue;
             }
-            if ".)".contains(line[offset + i + j]) {
-                let following_space_count = space_indent_count(line, offset + i + j);
-                if line.len() == offset + i + j + following_space_count {
+            if ".)".contains(line[offset + psc + j]) {
+                dbg!(&number_builder);
+                let following_space_count = space_indent_count(line, offset + psc + j);
+                if line.len() <= offset + psc + j + following_space_count {
+                    // ie, the rest of the line is blank
                     return Some((
-                        OrderedList(line[offset + i + j], number_builder.parse().unwrap()),
-                        ListItem(vec![], i + j + 2),
-                        i + j + 2,
+                        OrderedList(line[offset + psc + j], number_builder.parse().unwrap()),
+                        ListItem(vec![], psc + j + 2),
+                        psc + j + 2,
                     ));
                 }
                 if 1 <= following_space_count && following_space_count <= 4 {
                     return Some((
-                        OrderedList(line[offset + i + j], number_builder.parse().unwrap()),
-                        ListItem(vec![], i + j + 1 + following_space_count),
-                        i + j + 1 + following_space_count,
+                        OrderedList(line[offset + psc + j], number_builder.parse().unwrap()),
+                        ListItem(vec![], psc + j + 1 + following_space_count),
+                        psc + j + 1 + following_space_count,
                     ));
                 }
                 if following_space_count > 4 {
                     return Some((
-                        OrderedList(line[offset + i + j], number_builder.parse().unwrap()),
-                        ListItem(vec![], i + j + 2),
-                        i + j + 2,
+                        OrderedList(line[offset + psc + j], number_builder.parse().unwrap()),
+                        ListItem(vec![], psc + j + 2),
+                        psc + j + 2,
                     ));
                 }
             }
             return None;
         }
     }
-    if "-+*".contains(line[offset + i]) {
-        let following_space_count = line[offset + i..].iter().take_while(|c| **c == ' ').count();
-        if line.len() == offset + i + following_space_count {
+    if "-+*".contains(c) {
+        let following_space_count = dbg!(
+            line[offset + psc + 1..]
+                .iter()
+                .take_while(|c| **c == ' ')
+                .count()
+        );
+        if line.len() == offset + psc + following_space_count + 1 {
             // ie, the rest of the line is blank
             return Some((
-                UnorderedList(line[offset + i]),
-                ListItem(vec![], i + 2),
-                i + 2,
+                UnorderedList(line[offset + psc]),
+                ListItem(vec![], psc + 2),
+                psc + 2,
             ));
         }
         if 1 <= following_space_count && following_space_count <= 4 {
             return Some((
-                UnorderedList(line[offset + i]),
-                ListItem(vec![], i + 1 + following_space_count),
-                i + 1 + following_space_count,
+                UnorderedList(line[offset + psc]),
+                ListItem(vec![], psc + 1 + following_space_count),
+                psc + 1 + following_space_count,
             ));
         }
         if following_space_count > 4 {
             return Some((
-                UnorderedList(line[offset + i]),
-                ListItem(vec![], i + 2),
-                i + 2,
+                UnorderedList(line[offset + psc]),
+                ListItem(vec![], psc + 2),
+                psc + 2,
             ));
         }
         return None;
@@ -388,20 +416,23 @@ fn fenced_code_block_encountered(line: &Vec<char>, offset: usize, i: usize) -> O
     return None;
 }
 
-fn atx_heading_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<Block> {
-    if line.len() <= offset + i || i > 3 {
+fn atx_heading_encountered(line: &Vec<char>, offset: usize, psc: usize) -> Option<Block> {
+    if line.len() <= offset + psc || psc > 3 {
         return None;
     }
-    let t = line[offset + i];
+    let t = dbg!(line[offset + psc]);
     if t == '#' {
-        let pound_count = line[..offset + i].iter().take_while(|c| **c == '#').count();
-        if line.len() <= offset + i + pound_count {
-            return Some(ATXHeading(vec![], pound_count));
+        let pound_count = line[offset + psc..]
+            .iter()
+            .take_while(|c| **c == '#')
+            .count();
+        if line.len() <= offset + psc + pound_count {
+            return Some(Heading(vec![], pound_count));
         }
-        if pound_count <= 6 && line[offset + i + pound_count] == ' ' {
+        if pound_count <= 6 && line[offset + psc + pound_count] == ' ' {
             let mut inline_text: Vec<char> = vec![];
             dbg!(pound_count);
-            line[..offset + i + pound_count].iter().fold(
+            line[offset + psc + pound_count..].iter().fold(
                 (0, 0, 0),
                 |(pre_space, close_pounds, post_space), c| {
                     if *c == '#' {
@@ -418,21 +449,21 @@ fn atx_heading_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<
                         return (pre_space, close_pounds, post_space + 1);
                     }
                     if inline_text.len() > 0 {
-                        for _i in 0..pre_space {
+                        for _ in 0..pre_space {
                             inline_text.push(' ');
                         }
                     }
-                    for _i in 0..close_pounds {
+                    for _ in 0..close_pounds {
                         inline_text.push('#');
                     }
-                    for _i in 0..post_space {
+                    for _ in 0..post_space {
                         inline_text.push(' ');
                     }
                     inline_text.push(*c);
-                    (0, 0, 0)
+                    return (0, 0, 0);
                 },
             );
-            return Some(ATXHeading(inline_text, pound_count));
+            return Some(Heading(inline_text, pound_count));
         }
     }
     None
@@ -1047,23 +1078,21 @@ fn create_new_block_starts(
     }
 
     // c is first non space character after offset
-    let c = dbg!(line[*offset + pre_space_count]);
+    let c = line[*offset + pre_space_count];
+    dbg!(c);
 
     // First check for SetextHeading
     if open_par_above && pre_space_count <= 3 {
         if "-=".contains(c) {
-            dbg!(&offset);
-            dbg!(pre_space_count);
-            dbg!(line[*offset + pre_space_count..].iter().count());
             // the line is of the form "[pre-matched-structure][1-3 space](-|=)*' '*"
-            if dbg!(
-                line[*offset + pre_space_count..]
-                    .iter()
-                    .skip_while(|k| **k == c)
-                    .skip_while(|k| **k == ' ')
-                    .count()
-            ) == 0
+            if line[*offset + pre_space_count..]
+                .iter()
+                .skip_while(|k| **k == c)
+                .skip_while(|k| **k == ' ')
+                .count()
+                == 0
             {
+                dbg!("SetextHeading can be made!");
                 let mut h_text = vec![];
                 mem::swap(
                     &mut h_text,
@@ -1078,7 +1107,7 @@ fn create_new_block_starts(
                     BlockQuote(blocks, _) |
                     // List(blocks, _, list_type) => the only children of a list are list_blocks
                     ListItem(blocks, _) => {
-                        *blocks.last_mut().unwrap() = SetextHeading(h_text, if c == '=' {1} else {2});
+                        *blocks.last_mut().unwrap() = Heading(h_text, if c == '=' {1} else {2});
                     }
                     _ => panic!("should be unreachable!"),
                 }
@@ -1088,19 +1117,21 @@ fn create_new_block_starts(
         }
     }
 
-    // next check for thematic break
-    if "-*_".contains(c) && pre_space_count <= 3 {
-        let mut non_space = line[..*offset].iter().filter(|k| **k != ' ');
-        let count = non_space.clone().count();
-        if count >= 3 && non_space.all(|k| *k == c) {
-            match dbg!(document.get_general_container(*obd)).0 {
-                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
-                    blocks.push(ThematicBreak);
-                    *offset = line.len() - 1;
-                    return;
-                }
-                _ => panic!("should only match on general container"),
+    // next check for thematic break (before we add to list for priority reasons)
+    if thematic_break_encountered(line, *offset, pre_space_count) {
+        close_paragraph(
+            document,
+            &mut open_par_above,
+            &mut open_par_exists,
+            lrd_table,
+        );
+        match dbg!(document.get_general_container(*obd)).0 {
+            Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                blocks.push(ThematicBreak);
+                *offset = line.len() - 1;
+                return;
             }
+            _ => panic!("should only match on general container"),
         }
     }
 
@@ -1136,15 +1167,34 @@ fn create_new_block_starts(
 
     // keep looking for new block starts
     loop {
+        // next check for thematic break
+        if thematic_break_encountered(line, *offset, pre_space_count) {
+            close_paragraph(
+                document,
+                &mut open_par_above,
+                &mut open_par_exists,
+                lrd_table,
+            );
+            match dbg!(document.get_general_container(*obd)).0 {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                    blocks.push(ThematicBreak);
+                    *offset = line.len() - 1;
+                    return;
+                }
+                _ => panic!("should only match on general container"),
+            }
+        }
         if let Some((lt, list_item_block, offset_dif)) =
             list_item_encountered(line, *offset, pre_space_count)
         {
+            dbg!("list item encountered!");
             if open_par_above {
                 match lt {
                     OrderedList(_, 1) => (),
                     OrderedList(_, _) => break,
                     _ => (),
                 }
+                dbg!("allowed to break par!");
             } // only ordered lists starting with 1 can interrupt paragraphs
             close_paragraph(
                 document,
@@ -1298,10 +1348,7 @@ mod cnbs_tests {
                 true,
             )]),
             ">-",
-            &mut Document(vec![BlockQuote(
-                vec![SetextHeading(vec!['a', 'b'], 2)],
-                true,
-            )]),
+            &mut Document(vec![BlockQuote(vec![Heading(vec!['a', 'b'], 2)], true)]),
             1,
         );
     }
@@ -1311,7 +1358,7 @@ mod cnbs_tests {
         test_cnbs(
             &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
             "-",
-            &mut Document(vec![SetextHeading(vec!['a', 'b'], 2)]),
+            &mut Document(vec![Heading(vec!['a', 'b'], 2)]),
             0,
         );
     }
@@ -1321,7 +1368,7 @@ mod cnbs_tests {
         test_cnbs(
             &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
             "=          ",
-            &mut Document(vec![SetextHeading(vec!['a', 'b'], 1)]),
+            &mut Document(vec![Heading(vec!['a', 'b'], 1)]),
             10,
         );
     }
@@ -1332,7 +1379,7 @@ mod cnbs_tests {
             &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
             "- -",
             &mut Document(vec![
-                Paragraph(vec!['a', 'b'], true),
+                Paragraph(vec!['a', 'b'], false),
                 List(
                     vec![ListItem(
                         vec![List(vec![ListItem(vec![], 2)], true, UnorderedList('-'))],
@@ -1355,7 +1402,7 @@ mod cnbs_tests {
             )]),
             ">-",
             &mut Document(vec![
-                BlockQuote(vec![Paragraph(vec!['a', 'b'], true)], false),
+                BlockQuote(vec![Paragraph(vec!['a', 'b'], false)], false),
                 BlockQuote(
                     vec![List(vec![ListItem(vec![], 2)], true, UnorderedList('-'))],
                     true,
@@ -1373,10 +1420,7 @@ mod cnbs_tests {
                 true,
             )]),
             ">---",
-            &mut Document(vec![BlockQuote(
-                vec![SetextHeading(vec!['a', 'b'], 2)],
-                true,
-            )]),
+            &mut Document(vec![BlockQuote(vec![Heading(vec!['a', 'b'], 2)], true)]),
             3,
         );
     }
@@ -1390,7 +1434,7 @@ mod cnbs_tests {
             )]),
             ">***",
             &mut Document(vec![BlockQuote(
-                vec![Paragraph(vec!['a', 'b'], true), ThematicBreak],
+                vec![Paragraph(vec!['a', 'b'], false), ThematicBreak],
                 true,
             )]),
             3,
@@ -1523,7 +1567,7 @@ mod cnbs_tests {
         test_cnbs(
             &mut Document(vec![]),
             "#",
-            &mut Document(vec![ATXHeading(vec![], 1)]),
+            &mut Document(vec![Heading(vec![], 1)]),
             1,
         );
     }
@@ -1533,7 +1577,7 @@ mod cnbs_tests {
         test_cnbs(
             &mut Document(vec![]),
             "  #           #       ",
-            &mut Document(vec![ATXHeading(vec![], 1)]),
+            &mut Document(vec![Heading(vec![], 1)]),
             22,
         );
     }
@@ -1543,7 +1587,7 @@ mod cnbs_tests {
         test_cnbs(
             &mut Document(vec![]),
             "  #           #       hello # ",
-            &mut Document(vec![ATXHeading("#       hello".chars().collect(), 1)]),
+            &mut Document(vec![Heading("#       hello".chars().collect(), 1)]),
             30,
         );
     }
