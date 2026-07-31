@@ -1,3 +1,5 @@
+use std::os::unix::raw::blkcnt_t;
+
 use crate::ast_types::{Block::*, ListType::*};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -13,8 +15,8 @@ pub type Inline = Vec<char>;
 pub enum Block {
     Document(Vec<Block>),
     BlockQuote(Vec<Block>, bool),
-    List(Vec<Block>, bool, ListType),
-    // (children, tight, lt)
+    List(Vec<Block>, bool, ListType, bool),
+    // (children, tight, lt, blank_line_encountered)
     ListItem(Vec<Block>, usize),
     Heading(Inline, usize),
     Paragraph(Inline, bool),
@@ -36,7 +38,7 @@ impl Block {
             x => match self {
                 Document(blocks)
                 | BlockQuote(blocks, _)
-                | List(blocks, _, _)
+                | List(blocks, _, _, _)
                 | ListItem(blocks, _) => blocks.last_mut().unwrap().get_block_helper(x - 1),
                 _ => unreachable!(),
             },
@@ -72,7 +74,7 @@ impl Block {
                         Some(b) => current_block = b,
                     }
                 }
-                List(blocks, _, _) => {
+                List(blocks, _, _, _) => {
                     seen_list = true;
                     current_block = blocks.last().unwrap();
                 }
@@ -84,19 +86,27 @@ impl Block {
 
     pub fn is_leaf(&self) -> bool {
         match self {
-            Document(_) | BlockQuote(_, _) | List(_, _, _) | ListItem(_, _) => false,
+            Document(_) | BlockQuote(_, _) | List(_, _, _, _) | ListItem(_, _) => false,
             _ => true,
         }
     }
 
-    pub fn close_open_block(&mut self) {
+    pub fn close_open_block(&mut self, deeper_than: i32) {
         match self {
-            Document(blocks) | List(blocks, _, _) | ListItem(blocks, _) => {
+            Document(blocks) | List(blocks, _, _, _) | ListItem(blocks, _) => {
                 if !blocks.is_empty() {
-                    blocks.last_mut().unwrap().close_open_block()
+                    blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
                 }
             }
-            BlockQuote(_, is_open) => *is_open = false,
+            BlockQuote(blocks, is_open) => {
+                if deeper_than < 0 {
+                    *is_open = false
+                } else {
+                    if !blocks.is_empty() {
+                        blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
+                    }
+                }
+            }
             _ => (),
         }
     }
@@ -110,9 +120,10 @@ impl Block {
 
     pub fn get_last_block(&mut self) -> &mut Block {
         let descend = match self {
-            Document(blocks) | BlockQuote(blocks, _) | List(blocks, _, _) | ListItem(blocks, _) => {
-                !blocks.is_empty()
-            }
+            Document(blocks)
+            | BlockQuote(blocks, _)
+            | List(blocks, _, _, _)
+            | ListItem(blocks, _) => !blocks.is_empty(),
             _ => false,
         };
 
@@ -122,7 +133,7 @@ impl Block {
             match self {
                 Document(blocks)
                 | BlockQuote(blocks, _)
-                | List(blocks, _, _)
+                | List(blocks, _, _, _)
                 | ListItem(blocks, _) => {
                     return blocks.last_mut().unwrap().get_last_block();
                 }
@@ -151,7 +162,7 @@ impl Block {
                 }
                 string_builder.push_str("</blockquote>\n");
             }
-            List(blocks, is_tight, list_type) => match list_type {
+            List(blocks, is_tight, list_type, _) => match list_type {
                 OrderedList(_, n) => {
                     if *n != 1 {
                         string_builder.push_str(&format!("<ol start=\"{}\">\n", n));
@@ -163,13 +174,20 @@ impl Block {
                     }
                     string_builder.push_str("</ol>\n");
                 }
-                UnorderedList(_) => todo!(),
+                UnorderedList(_) => {
+                    string_builder.push_str("<ul>\n");
+                    for b in blocks {
+                        b.to_html_helper(*is_tight, string_builder);
+                    }
+                    string_builder.push_str("</ul>\n");
+                }
             },
             ListItem(blocks, _) => {
                 string_builder.push_str("<li>");
                 for b in blocks {
                     b.to_html_helper(in_tight_list, string_builder);
                 }
+                string_builder.push_str("</li>\n");
             }
             Heading(items, h) => {
                 string_builder.push_str(&format!("<h{}>", h));
@@ -180,22 +198,30 @@ impl Block {
             }
             Paragraph(items, _) => {
                 if !in_tight_list {
+                    if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                        string_builder.push('\n');
+                    }
                     string_builder.push_str("<p>");
                 }
                 for c in items {
                     string_builder.push(*c);
                 }
                 if !in_tight_list {
-                    string_builder.push_str("</p>");
+                    string_builder.push_str("</p>\n");
                 }
             }
-            ThematicBreak => string_builder.push_str("<hr />\n"),
+            ThematicBreak => {
+                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                string_builder.push_str("<hr />\n")
+            }
             IndentedCodeBlock(items, _items1) => {
                 string_builder.push_str("<pre><code>");
                 for c in items {
                     string_builder.push(*c);
                 }
-                string_builder.push_str("\n<pre><code>\n");
+                string_builder.push_str("\n</code></pre>\n");
             }
             FencedCodeBlock(items, _, _, lang_hint, _, _) => {
                 string_builder.push_str("<pre><code");
@@ -248,6 +274,7 @@ mod tests {
                 vec![ListItem(vec![ThematicBreak], 2)],
                 true,
                 ListType::UnorderedList('*'),
+                false,
             )],
             false,
         )]);
@@ -263,6 +290,7 @@ mod tests {
                     vec![ListItem(vec![ThematicBreak], 2)],
                     true,
                     ListType::UnorderedList('*'),
+                    false,
                 )],
                 false,
             ),
@@ -288,6 +316,7 @@ mod tests {
                     vec![ListItem(vec![ThematicBreak], 2)],
                     true,
                     ListType::UnorderedList('*'),
+                    false,
                 )],
                 false,
             ),
@@ -312,6 +341,7 @@ mod tests {
                 vec![ListItem(vec![ThematicBreak], 2)],
                 true,
                 UnorderedList('*'),
+                false,
             )],
             true,
         )]);
@@ -324,6 +354,7 @@ mod tests {
                         vec![ListItem(vec![ThematicBreak], 2)],
                         true,
                         UnorderedList('*'),
+                        false,
                     )],
                     true,
                 ),

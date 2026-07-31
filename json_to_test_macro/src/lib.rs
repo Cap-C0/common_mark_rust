@@ -21,12 +21,19 @@ pub fn json_to_test_macro(input: TokenStream) -> TokenStream {
                 .to_lowercase(),
             case["example"].to_string()
         );
-        let md_input = case["markdown"].to_string();
-        let html_out = case["html"].to_string();
+        let mut md_input = case["markdown"].to_string().replace("\\n", "\n");
+        let mut html_out = case["html"].to_string().replace("\\n", "\n");
+
+        // the quotation marks are kept for some reason
+        md_input.remove(md_input.len() - 1);
+        md_input.remove(0);
+        html_out.remove(html_out.len() - 1);
+        html_out.remove(0);
 
         quote! {
             #[test]
             fn #fn_name() {
+                println!("input:\n{}",#md_input);
                 assert_eq!(markdown_to_html(#md_input), #html_out);
             }
         }
