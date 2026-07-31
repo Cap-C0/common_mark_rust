@@ -22,8 +22,10 @@ fn is_ascii_control(c: char) -> bool {
 pub fn markdown_to_html(markdown: &str) -> String {
     // first split into lines
 
-    let lines: Vec<Vec<char>> = markdown.split('\n').map(|x| x.chars().collect()).collect();
-
+    let mut lines: Vec<Vec<char>> = markdown.split('\n').map(|x| x.chars().collect()).collect();
+    if lines.last().expect("lines is non empty").len() == 0 {
+        lines.pop(); // an erroneous extra line is not needed
+    }
     // 21-2F and 31-40 and 5B-60 and 7B-7E
     // let ascii_punctuation: Vec<char> = (0x21..0x25)
     //     .chain(0x31..0x40)
@@ -148,10 +150,12 @@ fn check_continuation_conditions(
             ThematicBreak => break,
             IndentedCodeBlock(_, _) => {
                 let i = space_indent_count(line, *offset);
+                // ie, there are non space chars in the first 4 chars
                 if line.len() > *offset + i && i < 4 {
                     break;
                 }
-                *offset += std::cmp::min(4, line.len() - (*offset + i));
+                *offset += std::cmp::min(4, i);
+                //dont eat blank characters before the first 4 spaces
                 *open_block_depth += 1;
                 break;
             }
@@ -377,44 +381,54 @@ fn list_item_encountered(
     None
 }
 
-fn block_quote_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<usize> {
-    if line.len() <= offset + i || i > 3 {
+fn block_quote_encountered(line: &Vec<char>, offset: usize, psc: usize) -> Option<usize> {
+    if line.len() <= offset + psc || psc > 3 {
         return None;
     }
-    if line[offset + i] == '>' {
+    if line[offset + psc] == '>' {
         //bounds check
-        if line.len() <= offset + i + 1 {
-            return Some(i + 1);
+        if line.len() <= offset + psc + 1 {
+            return Some(psc + 1);
         }
-        if line[offset + i + 1] == ' ' {
-            return Some(i + 2);
+        if line[offset + psc + 1] == ' ' {
+            return Some(psc + 2);
         } else {
-            return Some(i + 1);
+            return Some(psc + 1);
         }
     }
     None
 }
 
-fn fenced_code_block_encountered(line: &Vec<char>, offset: usize, i: usize) -> Option<Block> {
-    if line.len() <= offset + i + 2 || i > 3 {
+fn fenced_code_block_encountered(line: &Vec<char>, offset: usize, psc: usize) -> Option<Block> {
+    if line.len() <= offset + psc + 2 || psc > 3 {
         return None;
     }
-    let t = line[offset + i];
+    let t = line[offset + psc];
     if "~`".contains(t) {
-        let tick_count = line[..offset + i].iter().take_while(|c| **c == t).count();
+        let tick_count = line[offset + psc..].iter().take_while(|c| **c == t).count();
         if tick_count >= 3 {
             if t == '`' {
-                if line[..offset + i + tick_count].iter().any(|c| *c == '`') {
+                if (&line[offset + psc + tick_count..])
+                    .iter()
+                    .any(|c| *c == '`')
+                {
                     return None;
                 }
             }
-            let info_string: Vec<char> = line[..offset + i + tick_count]
+            let info_string: Vec<char> = line[offset + psc + tick_count..]
                 .iter()
                 .skip_while(|c| **c == ' ')
                 .take_while(|c| **c != ' ')
                 .map(|c| *c)
                 .collect();
-            return Some(FencedCodeBlock(vec![], true, t, info_string, i, tick_count));
+            return Some(FencedCodeBlock(
+                vec![],
+                true,
+                t,
+                info_string,
+                psc,
+                tick_count,
+            ));
         }
     }
     return None;
@@ -434,13 +448,13 @@ fn atx_heading_encountered(line: &Vec<char>, offset: usize, psc: usize) -> Optio
             return Some(Heading(vec![], pound_count));
         }
         if pound_count <= 6 && line[offset + psc + pound_count] == ' ' {
+            let leading_space = space_indent_count(line, offset + psc + pound_count);
             let mut inline_text: Vec<char> = vec![];
-            dbg!(pound_count);
-            line[offset + psc + pound_count..].iter().fold(
-                (0, 0, 0),
-                |(pre_space, close_pounds, post_space), c| {
+            line[offset + psc + pound_count + leading_space..]
+                .iter()
+                .fold((0, 0, 0), |(pre_space, close_pounds, post_space), c| {
                     if *c == '#' {
-                        if close_pounds == 0 && post_space > 0 {
+                        if close_pounds == 0 && (post_space > 0 || inline_text.is_empty()) {
                             return (post_space, 1, 0);
                         }
                         if close_pounds > 0 {
@@ -465,8 +479,7 @@ fn atx_heading_encountered(line: &Vec<char>, offset: usize, psc: usize) -> Optio
                     }
                     inline_text.push(*c);
                     return (0, 0, 0);
-                },
-            );
+                });
             return Some(Heading(inline_text, pound_count));
         }
     }
@@ -1017,21 +1030,25 @@ fn create_new_block_starts(
             if is_blank_line(line, *offset) {
                 spaces.push(line.len() - *offset);
             } else {
-                for s in spaces {
+                for s in spaces.iter() {
                     chars.push('\n');
                     for _ in 0..*s {
                         chars.push(' ');
                     }
                 }
+                *spaces = vec![];
                 chars.push('\n');
-                chars.append(&mut line[..*offset].iter().map(|c| *c).collect());
+                chars.append(&mut line[*offset..].iter().map(|c| *c).collect());
+                return;
             }
         }
         FencedCodeBlock(chars, is_open @ true, marker, _, indent_count, marker_count) => {
+            dbg!("open fenced code block above");
             match fenced_code_block_encountered(line, *offset, pre_space_count) {
                 Some(FencedCodeBlock(_, _, t, infstr, _, tc)) => {
                     if t == *marker && infstr.len() == 0 && tc >= *marker_count {
                         *is_open = false;
+                        dbg!(is_open);
                         *offset = line.len();
                         *obd -= 1;
                         return;
@@ -1039,17 +1056,15 @@ fn create_new_block_starts(
                 }
                 _ => (),
             }
+            println!("line: {:?} can be added!", &line[*offset..]);
             chars.append(
-                &mut line[..(*offset
-                    + if pre_space_count > *indent_count {
-                        *indent_count
-                    } else {
-                        pre_space_count
-                    })]
+                &mut line[*offset + std::cmp::min(pre_space_count, *indent_count)..]
                     .iter()
                     .map(|c| *c)
                     .collect(),
             );
+            chars.push('\n');
+            return;
         }
         _ => (),
     }
@@ -1082,8 +1097,6 @@ fn create_new_block_starts(
         document.close_open_block(*obd as i32);
         return;
     }
-
-    //
 
     // c is first non space character after offset
     let c = line[*offset + pre_space_count];

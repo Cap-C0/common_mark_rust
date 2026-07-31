@@ -194,7 +194,7 @@ impl Block {
                 for c in items {
                     string_builder.push(*c);
                 }
-                string_builder.push_str(&format!("<h{}>", h));
+                string_builder.push_str(&format!("</h{}>\n", h));
             }
             Paragraph(items, _) => {
                 if !in_tight_list {
@@ -236,7 +236,7 @@ impl Block {
                 for c in items {
                     string_builder.push(*c);
                 }
-                string_builder.push_str("\n<pre><code>\n");
+                string_builder.push_str("</code></pre>\n");
             }
             HTMLBlock(_items) => todo!(),
         }
