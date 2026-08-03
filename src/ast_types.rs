@@ -15,11 +15,13 @@ pub enum Block {
     BlockQuote(Vec<Block>, bool),
     /// (children, tight, lt, blank_line_encountered)
     List(Vec<Block>, bool, ListType, bool),
-    ListItem(Vec<Block>, usize),
+    /// (children, continuable, indent requirement)
+    ListItem(Vec<Block>, bool, usize),
     Heading(Inline, usize),
     Paragraph(Inline, bool),
     ThematicBreak,
-    IndentedCodeBlock(Vec<char>, Vec<usize>), // unrealized blank line count with space count
+    ///
+    IndentedCodeBlock(Vec<char>, Vec<Vec<char>>), // unrealized blank lines
     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
     FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
     HTMLBlock(Inline),
@@ -37,7 +39,7 @@ impl Block {
                 Document(blocks)
                 | BlockQuote(blocks, _)
                 | List(blocks, _, _, _)
-                | ListItem(blocks, _) => blocks.last_mut().unwrap().get_block_helper(x - 1),
+                | ListItem(blocks, _, _) => blocks.last_mut().unwrap().get_block_helper(x - 1),
                 _ => unreachable!(),
             },
         }
@@ -58,7 +60,7 @@ impl Block {
                     None => break,
                     Some(b) => current_block = b,
                 },
-                BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
                     if seen_list {
                         if new_depth + 2 > open_block_depth {
                             break;
@@ -84,46 +86,18 @@ impl Block {
 
     pub fn is_leaf(&self) -> bool {
         match self {
-            Document(_) | BlockQuote(_, _) | List(_, _, _, _) | ListItem(_, _) => false,
+            Document(_) | BlockQuote(_, _) | List(_, _, _, _) | ListItem(_, _, _) => false,
             _ => true,
         }
     }
 
-    pub fn close_open_block(&mut self, deeper_than: i32) {
-        match self {
-            Document(blocks) | List(blocks, _, _, _) | ListItem(blocks, _) => {
-                if !blocks.is_empty() {
-                    blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
-                }
-            }
-            BlockQuote(blocks, is_open) => {
-                if deeper_than < 0 {
-                    *is_open = false
-                } else {
-                    if !blocks.is_empty() {
-                        blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
-                    }
-                }
-            }
-            _ => (),
-        }
-    }
-
-    pub fn is_general_block_appendable(&self) -> bool {
-        match self {
-            Document(_) | BlockQuote(_, true) | ListItem(_, _) => true,
-            _ => false,
-        }
-    }
-
-    pub fn detighten_flag(&mut self, depth: usize) {
-        //first find the deepest matched blockquote
+    pub fn deepest_matched_blockquote(&mut self, max_depth: usize) -> usize {
         let mut current_depth = 0;
         let mut last_blockquote_depth = 0;
         let mut current_block: &Block = self;
-        while current_depth < depth {
+        while current_depth < max_depth {
             match current_block {
-                Document(blocks) | List(blocks, _, _, _) | ListItem(blocks, _) => {
+                Document(blocks) | List(blocks, _, _, _) | ListItem(blocks, _, _) => {
                     current_depth += 1;
                     if !blocks.is_empty() {
                         current_block = blocks.last().unwrap()
@@ -143,14 +117,40 @@ impl Block {
                 _ => break,
             }
         }
-        //then set blank_line_encountered for anything_deeper than that block
-        self.detighten_deeper_than(last_blockquote_depth as i32);
+        last_blockquote_depth
+    }
+
+    pub fn close_open_block(&mut self, deeper_than: i32) {
+        match self {
+            Document(blocks) | List(blocks, _, _, _) | ListItem(blocks, _, _) => {
+                if !blocks.is_empty() {
+                    blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
+                }
+            }
+            BlockQuote(blocks, is_open) => {
+                if deeper_than < 0 {
+                    *is_open = false
+                } else {
+                    if !blocks.is_empty() {
+                        blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
+                    }
+                }
+            }
+            _ => (),
+        }
+    }
+
+    pub fn is_general_block_appendable(&self) -> bool {
+        match self {
+            Document(_) | BlockQuote(_, true) | ListItem(_, _, _) => true,
+            _ => false,
+        }
     }
 
     pub fn reset_blank_line_seen(&mut self, depth: usize) {
         if depth > 0 {
             match self {
-                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
                     if blocks.is_empty() {
                         return;
                     }
@@ -170,7 +170,7 @@ impl Block {
 
     fn detighten_deeper_than(&mut self, depth: i32) {
         match self {
-            Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+            Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
                 if blocks.is_empty() {
                     return;
                 }
@@ -194,7 +194,7 @@ impl Block {
             Document(blocks)
             | BlockQuote(blocks, _)
             | List(blocks, _, _, _)
-            | ListItem(blocks, _) => !blocks.is_empty(),
+            | ListItem(blocks, _, _) => !blocks.is_empty(),
             _ => false,
         };
 
@@ -205,7 +205,7 @@ impl Block {
                 Document(blocks)
                 | BlockQuote(blocks, _)
                 | List(blocks, _, _, _)
-                | ListItem(blocks, _) => {
+                | ListItem(blocks, _, _) => {
                     return blocks.last_mut().unwrap().get_last_block();
                 }
                 _ => unreachable!("already bool checked earlier"),
@@ -261,7 +261,7 @@ impl Block {
                     }
                 }
             }
-            ListItem(blocks, _) => {
+            ListItem(blocks, _, _) => {
                 string_builder.push_str("<li>");
                 for b in blocks {
                     b.to_html_helper(in_tight_list, string_builder);
@@ -269,6 +269,9 @@ impl Block {
                 string_builder.push_str("</li>\n");
             }
             Heading(items, h) => {
+                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
                 string_builder.push_str(&format!("<h{}>", h));
                 for c in items {
                     string_builder.push(*c);
@@ -356,7 +359,7 @@ mod tests {
     fn test_get_block_1() {
         let mut test_tree = Document(vec![BlockQuote(
             vec![List(
-                vec![ListItem(vec![ThematicBreak], 2)],
+                vec![ListItem(vec![ThematicBreak], true, 2)],
                 true,
                 ListType::UnorderedList('*'),
                 false,
@@ -372,7 +375,7 @@ mod tests {
         let mut test_tree = Document(vec![
             BlockQuote(
                 vec![List(
-                    vec![ListItem(vec![ThematicBreak], 2)],
+                    vec![ListItem(vec![ThematicBreak], true, 2)],
                     true,
                     ListType::UnorderedList('*'),
                     false,
@@ -398,7 +401,7 @@ mod tests {
         let mut test_tree = Document(vec![
             BlockQuote(
                 vec![List(
-                    vec![ListItem(vec![ThematicBreak], 2)],
+                    vec![ListItem(vec![ThematicBreak], true, 2)],
                     true,
                     ListType::UnorderedList('*'),
                     false,
@@ -423,7 +426,7 @@ mod tests {
     fn test_get_last_general_container() {
         let ast = &mut Document(vec![BlockQuote(
             vec![List(
-                vec![ListItem(vec![ThematicBreak], 2)],
+                vec![ListItem(vec![ThematicBreak], true, 2)],
                 true,
                 UnorderedList('*'),
                 false,
@@ -436,7 +439,7 @@ mod tests {
             (
                 &mut BlockQuote(
                     vec![List(
-                        vec![ListItem(vec![ThematicBreak], 2)],
+                        vec![ListItem(vec![ThematicBreak], true, 2)],
                         true,
                         UnorderedList('*'),
                         false,
