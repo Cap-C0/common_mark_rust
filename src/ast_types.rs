@@ -1,5 +1,3 @@
-use std::os::unix::raw::blkcnt_t;
-
 use crate::ast_types::{Block::*, ListType::*};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -15,15 +13,15 @@ pub type Inline = Vec<char>;
 pub enum Block {
     Document(Vec<Block>),
     BlockQuote(Vec<Block>, bool),
+    /// (children, tight, lt, blank_line_encountered)
     List(Vec<Block>, bool, ListType, bool),
-    // (children, tight, lt, blank_line_encountered)
     ListItem(Vec<Block>, usize),
     Heading(Inline, usize),
     Paragraph(Inline, bool),
     ThematicBreak,
     IndentedCodeBlock(Vec<char>, Vec<usize>), // unrealized blank line count with space count
+    /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
     FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
-    // (contents, is_open, marking char, info_string, indend_count, tilde_count)
     HTMLBlock(Inline),
 }
 
@@ -118,6 +116,79 @@ impl Block {
         }
     }
 
+    pub fn detighten_flag(&mut self, depth: usize) {
+        //first find the deepest matched blockquote
+        let mut current_depth = 0;
+        let mut last_blockquote_depth = 0;
+        let mut current_block: &Block = self;
+        while current_depth < depth {
+            match current_block {
+                Document(blocks) | List(blocks, _, _, _) | ListItem(blocks, _) => {
+                    current_depth += 1;
+                    if !blocks.is_empty() {
+                        current_block = blocks.last().unwrap()
+                    } else {
+                        break;
+                    }
+                }
+                BlockQuote(blocks, _) => {
+                    current_depth += 1;
+                    last_blockquote_depth = current_depth;
+                    if !blocks.is_empty() {
+                        current_block = blocks.last().unwrap()
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        //then set blank_line_encountered for anything_deeper than that block
+        self.detighten_deeper_than(last_blockquote_depth as i32);
+    }
+
+    pub fn reset_blank_line_seen(&mut self, depth: usize) {
+        if depth > 0 {
+            match self {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                    if blocks.is_empty() {
+                        return;
+                    }
+                    blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
+                }
+                List(blocks, _, _, blank_line_encountered) => {
+                    *blank_line_encountered = false;
+                    if blocks.is_empty() {
+                        return;
+                    }
+                    blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
+                }
+                _ => return,
+            }
+        }
+    }
+
+    fn detighten_deeper_than(&mut self, depth: i32) {
+        match self {
+            Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _) => {
+                if blocks.is_empty() {
+                    return;
+                }
+                blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
+            }
+            List(blocks, _, _, blank_line_encountered) => {
+                if depth <= 0 {
+                    *blank_line_encountered = true
+                }
+                if blocks.is_empty() {
+                    return;
+                }
+                blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
+            }
+            _ => return,
+        }
+    }
+
     pub fn get_last_block(&mut self) -> &mut Block {
         let descend = match self {
             Document(blocks)
@@ -156,32 +227,40 @@ impl Block {
                 }
             }
             BlockQuote(blocks, _) => {
+                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
                 string_builder.push_str("<blockquote>\n");
                 for b in blocks {
                     b.to_html_helper(false, string_builder);
                 }
                 string_builder.push_str("</blockquote>\n");
             }
-            List(blocks, is_tight, list_type, _) => match list_type {
-                OrderedList(_, n) => {
-                    if *n != 1 {
-                        string_builder.push_str(&format!("<ol start=\"{}\">\n", n));
-                    } else {
-                        string_builder.push_str("<ol>\n");
-                    }
-                    for b in blocks {
-                        b.to_html_helper(*is_tight, string_builder);
-                    }
-                    string_builder.push_str("</ol>\n");
+            List(blocks, is_tight, list_type, _) => {
+                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
                 }
-                UnorderedList(_) => {
-                    string_builder.push_str("<ul>\n");
-                    for b in blocks {
-                        b.to_html_helper(*is_tight, string_builder);
+                match list_type {
+                    OrderedList(_, n) => {
+                        if *n != 1 {
+                            string_builder.push_str(&format!("<ol start=\"{}\">\n", n));
+                        } else {
+                            string_builder.push_str("<ol>\n");
+                        }
+                        for b in blocks {
+                            b.to_html_helper(*is_tight, string_builder);
+                        }
+                        string_builder.push_str("</ol>\n");
                     }
-                    string_builder.push_str("</ul>\n");
+                    UnorderedList(_) => {
+                        string_builder.push_str("<ul>\n");
+                        for b in blocks {
+                            b.to_html_helper(*is_tight, string_builder);
+                        }
+                        string_builder.push_str("</ul>\n");
+                    }
                 }
-            },
+            }
             ListItem(blocks, _) => {
                 string_builder.push_str("<li>");
                 for b in blocks {
@@ -197,7 +276,7 @@ impl Block {
                 string_builder.push_str(&format!("</h{}>\n", h));
             }
             Paragraph(items, _) => {
-                if !in_tight_list {
+                if !in_tight_list && items.len() > 0 {
                     if string_builder.len() > 0 && !string_builder.ends_with('\n') {
                         string_builder.push('\n');
                     }
@@ -206,7 +285,7 @@ impl Block {
                 for c in items {
                     string_builder.push(*c);
                 }
-                if !in_tight_list {
+                if !in_tight_list && items.len() > 0 {
                     string_builder.push_str("</p>\n");
                 }
             }
@@ -217,6 +296,9 @@ impl Block {
                 string_builder.push_str("<hr />\n")
             }
             IndentedCodeBlock(items, _items1) => {
+                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
                 string_builder.push_str("<pre><code>");
                 for c in items {
                     string_builder.push(*c);
@@ -224,6 +306,9 @@ impl Block {
                 string_builder.push_str("\n</code></pre>\n");
             }
             FencedCodeBlock(items, _, _, lang_hint, _, _) => {
+                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
                 string_builder.push_str("<pre><code");
                 if lang_hint.len() > 0 {
                     string_builder.push_str(" class=\"language-");

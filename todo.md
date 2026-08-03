@@ -8,3 +8,8 @@
   - [x] atx_heading
   - [x] lazy paragraph continuation
   - [x] reference link defs
+- [ ] incorporate tabs
+  - [ ] fix space counting code
+    - [ ] atx_heading
+- [ ] implement correct new line code
+

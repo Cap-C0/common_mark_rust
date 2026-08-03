@@ -1,7 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use syn::{LitStr, parse_macro_input};
 
 #[derive(Serialize, Deserialize)]
@@ -31,6 +30,7 @@ pub fn json_to_test_macro(input: TokenStream) -> TokenStream {
 
         quote! {
             #[test]
+            #[timeout(50)]
             fn #fn_name() {
                 println!("input:\n{}",#md_input);
                 assert_eq!(markdown_to_html(#md_input), #html_out);
@@ -39,6 +39,9 @@ pub fn json_to_test_macro(input: TokenStream) -> TokenStream {
     });
 
     let expanded = quote! {
+        use ntest::timeout;
+        use pretty_assertions::assert_eq;
+
         #(#tests)*
     };
 

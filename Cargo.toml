@@ -7,3 +7,5 @@ edition = "2024"
 serde = "1.0.228"
 serde_json = "1.0.150"
 json_to_test_macro = {path = "./json_to_test_macro/"}
+pretty_assertions = "1.4.1"
+ntest = "0.9.5"
