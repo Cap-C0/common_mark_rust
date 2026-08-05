@@ -24,7 +24,14 @@ pub enum Block {
     IndentedCodeBlock(Vec<char>, Vec<Vec<char>>), // unrealized blank lines
     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
     FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
-    HTMLBlock(Inline),
+    /// (characters, end_condition, )
+    HTMLBlock(Inline, bool, HTMLEndCondition),
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum HTMLEndCondition {
+    ContainsStrings(Vec<Vec<char>>),
+    BlankLine,
 }
 
 impl Block {
@@ -38,8 +45,8 @@ impl Block {
             x => match self {
                 Document(blocks)
                 | BlockQuote(blocks, _)
-                | List(blocks, _, _, _)
-                | ListItem(blocks, _, _) => blocks.last_mut().unwrap().get_block_helper(x - 1),
+                | List(blocks, ..)
+                | ListItem(blocks, ..) => blocks.last_mut().unwrap().get_block_helper(x - 1),
                 _ => unreachable!(),
             },
         }
@@ -74,7 +81,7 @@ impl Block {
                         Some(b) => current_block = b,
                     }
                 }
-                List(blocks, _, _, _) => {
+                List(blocks, ..) => {
                     seen_list = true;
                     current_block = blocks.last().unwrap();
                 }
@@ -86,7 +93,7 @@ impl Block {
 
     pub fn is_leaf(&self) -> bool {
         match self {
-            Document(_) | BlockQuote(_, _) | List(_, _, _, _) | ListItem(_, _, _) => false,
+            Document(_) | BlockQuote(..) | List(..) | ListItem(..) => false,
             _ => true,
         }
     }
@@ -97,7 +104,7 @@ impl Block {
         let mut current_block: &Block = self;
         while current_depth < max_depth {
             match current_block {
-                Document(blocks) | List(blocks, _, _, _) | ListItem(blocks, _, _) => {
+                Document(blocks) | List(blocks, ..) | ListItem(blocks, ..) => {
                     current_depth += 1;
                     if !blocks.is_empty() {
                         current_block = blocks.last().unwrap()
@@ -122,7 +129,7 @@ impl Block {
 
     pub fn close_open_block(&mut self, deeper_than: i32) {
         match self {
-            Document(blocks) | List(blocks, _, _, _) | ListItem(blocks, _, _) => {
+            Document(blocks) | List(blocks, ..) | ListItem(blocks, ..) => {
                 if !blocks.is_empty() {
                     blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
                 }
@@ -261,7 +268,7 @@ impl Block {
                     }
                 }
             }
-            ListItem(blocks, _, _) => {
+            ListItem(blocks, ..) => {
                 string_builder.push_str("<li>");
                 for b in blocks {
                     b.to_html_helper(in_tight_list, string_builder);
@@ -326,7 +333,7 @@ impl Block {
                 }
                 string_builder.push_str("</code></pre>\n");
             }
-            HTMLBlock(_items) => todo!(),
+            HTMLBlock(_items, ..) => todo!(),
         }
     }
 }

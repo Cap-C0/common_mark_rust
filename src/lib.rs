@@ -1,4 +1,5 @@
 use crate::Block::*;
+use crate::HTMLEndCondition::*;
 use crate::ListType::*;
 use crate::ast_types::*;
 use std::collections::HashMap;
@@ -42,7 +43,6 @@ pub fn markdown_to_html(markdown: &str) -> String {
         // similarly, no tabs should imply that additional_possible_spaces is always 0.
         let mut additional_possible_spaces: usize = 0;
         let mut open_block_depth: usize = 0;
-        dbg!(&document);
         check_continuation_conditions(
             &document,
             &line,
@@ -207,7 +207,12 @@ fn check_continuation_conditions(
                 }
                 break;
             }
-            HTMLBlock(_items) => todo!(),
+            HTMLBlock(_, is_open, _) => {
+                if *is_open {
+                    *open_block_depth += 1;
+                }
+                break;
+            }
         }
     }
 }
@@ -626,6 +631,224 @@ fn atx_heading_encountered(line: &Vec<char>, char_offset_after_space: usize) -> 
             );
 
             return Some(Heading(inline_text, pound_count));
+        }
+    }
+    None
+}
+
+fn html_start_encountered(line: &Vec<char>, char_offset_after_space: usize) -> Option<Block> {
+    let simple_starts_with = |str: &'static str| -> Box<dyn Fn(&[char]) -> bool> {
+        Box::new(move |line_in: &[char]| {
+            return line_in.len() >= str.len()
+                && line_in[..str.len()] == str.chars().collect::<Vec<char>>();
+        })
+    };
+    let special_tag: Box<dyn Fn(&[char]) -> bool> = Box::new(|line_in: &[char]| -> bool {
+        ["<pre", "<script", "<style", "<textarea"].iter().any(|s| {
+            simple_starts_with(s)(line_in)
+                && (line_in.len() == s.len() || " \t>".contains(line_in[s.len()]))
+        })
+    });
+    let exclamation: Box<dyn Fn(&[char]) -> bool> = Box::new(|line_in: &[char]| -> bool {
+        let start = "<!";
+        return line_in.len() >= start.len() + 1
+            && line_in[..start.len()] == start.chars().collect::<Vec<char>>()
+            && line_in[2].is_alphabetic();
+    });
+    for (start_con, end_strs) in [
+        (
+            special_tag,
+            vec!["</pre>", "</script>", "</style>", "</textarea>"],
+        ),
+        (simple_starts_with("<!--"), vec!["-->"]),
+        (simple_starts_with("<?"), vec![">"]),
+        (exclamation, vec![">"]),
+        (simple_starts_with("<![CDATA["), vec!["]]>"]),
+    ] {
+        if start_con(&line[char_offset_after_space..]) {
+            return Some(HTMLBlock(
+                line[char_offset_after_space..].iter().map(|&c| c).collect(),
+                !end_strs.iter().any(|s| {
+                    line[char_offset_after_space..].windows(s.len()).any(|cs| {
+                        cs.iter()
+                            .map(|&c| c.to_ascii_lowercase())
+                            .collect::<Vec<char>>()
+                            == s.chars().collect::<Vec<char>>()
+                    })
+                }),
+                ContainsStrings(end_strs.iter().map(|s| s.chars().collect()).collect()),
+            ));
+        }
+    }
+
+    let reserved_tags = [
+        "address",
+        "article",
+        "aside",
+        "base",
+        "basefont",
+        "blockquote",
+        "body",
+        "caption",
+        "center",
+        "col",
+        "colgroup",
+        "dd",
+        "details",
+        "dialog",
+        "dir",
+        "div",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "frame",
+        "frameset",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "header",
+        "hr",
+        "html",
+        "iframe",
+        "legend",
+        "li",
+        "link",
+        "main",
+        "menu",
+        "menuitem",
+        "nav",
+        "noframes",
+        "ol",
+        "optgroup",
+        "option",
+        "p",
+        "param",
+        "search",
+        "section",
+        "summary",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "title",
+        "tr",
+        "track",
+        "ul",
+    ];
+
+    if line[char_offset_after_space] == '<' {
+        let mut is_open_tag = true;
+        let mut tag_offset = char_offset_after_space + 1;
+        if line.len() > tag_offset + 1 && line[tag_offset + 1] == '/' {
+            tag_offset += 1;
+            is_open_tag = false;
+        }
+        for rt in reserved_tags {
+            if simple_starts_with(rt)(&line[tag_offset..])
+                && (line.len() == tag_offset + rt.len()
+                    || " \t>".contains(line[tag_offset + rt.len()])
+                    || simple_starts_with("/>")(&line[tag_offset + rt.len()..]))
+            {
+                return Some(HTMLBlock(
+                    line[char_offset_after_space..].iter().map(|&c| c).collect(),
+                    true,
+                    BlankLine,
+                ));
+            }
+        }
+
+        let parse_attribute = |line_in: &[char]| -> Option<usize> {
+            let mut offset = 0;
+            while " \t".contains(line_in[offset]) {
+                offset += 1;
+            }
+            if line_in.len() <= offset
+                || !("_:".contains(line_in[offset]) || line_in[offset].is_alphabetic())
+            {
+                return None;
+            }
+            offset += 1;
+            while line_in.len() > offset
+                && ("_.:-".contains(line_in[offset]) || line_in[offset].is_ascii_alphanumeric())
+            {
+                offset += 1;
+            }
+            let pre_val_offset = offset;
+
+            while line_in.len() > offset && " \t".contains(line_in[offset]) {
+                offset += 1;
+            }
+            if line_in.len() <= offset || line_in[offset] != '=' {
+                return Some(pre_val_offset);
+            }
+            offset += 1;
+            while line_in.len() > offset && " \t".contains(line_in[offset]) {
+                offset += 1;
+            }
+            if line_in.len() <= offset {
+                return Some(pre_val_offset);
+            }
+            let c = line_in[offset];
+            if "\"\'".contains(c) {
+                offset += 1;
+                while line_in.len() > offset && line_in[offset] != c {
+                    offset += 1;
+                }
+                return Some(offset);
+            }
+            while line_in.len() > offset && !" \t\"\'=<>`".contains(line_in[offset]) {
+                offset += 1;
+            }
+            Some(offset)
+        };
+
+        //parse tag name
+        if line.len() <= tag_offset || !line[tag_offset].is_ascii_alphabetic() {
+            return None;
+        }
+        while line.len() > tag_offset
+            && (line[tag_offset] == '-' || line[tag_offset].is_ascii_alphanumeric())
+        {
+            tag_offset += 1
+        }
+
+        //optional attributes
+        if is_open_tag {
+            while let Some(x) = parse_attribute(&line[tag_offset..]) {
+                tag_offset += x;
+            }
+        }
+        //trailing white space
+        while line.len() > tag_offset && " \t".contains(line[tag_offset]) {
+            tag_offset += 1;
+        }
+
+        if is_open_tag && line.len() > tag_offset && line[tag_offset] == '/' {
+            tag_offset += 1;
+        }
+
+        if line.len() > tag_offset && line[tag_offset] == '>' {
+            tag_offset += 1;
+        } else {
+            return None;
+        }
+
+        if line[tag_offset..].iter().all(|&c| " \t".contains(c)) {
+            return Some(HTMLBlock(
+                line[char_offset_after_space..].iter().map(|&c| c).collect(),
+                true,
+                BlankLine,
+            ));
         }
     }
     None
@@ -1195,11 +1418,9 @@ fn create_new_block_starts(
                     }
                     unrealized_blanks.push(next_blank);
                 }
-
-                FencedCodeBlock(_, _, _, _, _, _) => {
-                    println!("blank line belongs to fenced code!");
-                    break 'blank_line;
-                }
+                FencedCodeBlock(..) => break 'blank_line,
+                HTMLBlock(_, true, ContainsStrings(_)) => break 'blank_line,
+                HTMLBlock(_, is_open @ true, BlankLine) => *is_open = false,
                 ListItem(blocks, continuable, _) => {
                     if blocks.is_empty() {
                         *continuable = false;
@@ -1259,38 +1480,60 @@ fn create_new_block_starts(
             chars.push('\n');
             return;
         }
+        HTMLBlock(chars, is_open @ true, end_condition) => {
+            if let ContainsStrings(strs) = end_condition {
+                for s in strs {
+                    if line[*char_offset..].windows(s.len()).any(|cs| {
+                        cs.iter()
+                            .map(|&c| c.to_ascii_lowercase())
+                            .collect::<Vec<char>>()
+                            == *s
+                    }) {
+                        *is_open = false;
+                    }
+                }
+            }
+            chars.push('\n');
+            for &c in &line[*char_offset..] {
+                chars.push(c);
+            }
+        }
         _ => (),
     }
     // c is first non space character after offset
     let c = line[char_offset_after_spaces];
 
     // First check for SetextHeading
-    if open_par_above && pre_space_count <= 3 {
-        if "-=".contains(c) {
-            // the line is of the form "[pre-matched-structure][1-3 space](-|=)*' '*"
-            if line[*char_offset + pre_space_count..]
-                .iter()
-                .skip_while(|k| **k == c)
-                .skip_while(|k| " \t".contains(**k))
-                .count()
-                == 0
-            {
-                close_paragraph(
-                    document,
-                    &mut open_par_above,
-                    &mut open_par_exists,
-                    lrd_table,
-                );
-                let mut h_text = vec![];
-                mem::swap(
-                    &mut h_text,
+    'setext_check: {
+        if open_par_above && pre_space_count <= 3 {
+            if "-=".contains(c) {
+                // the line is of the form "[pre-matched-structure][1-3 space](-|=)*' '*"
+                if line[*char_offset + pre_space_count..]
+                    .iter()
+                    .skip_while(|k| **k == c)
+                    .skip_while(|k| " \t".contains(**k))
+                    .count()
+                    == 0
+                {
+                    close_paragraph(
+                        document,
+                        &mut open_par_above,
+                        &mut open_par_exists,
+                        lrd_table,
+                    );
+                    let mut h_text = vec![];
                     match document.get_block(*obd) {
-                        Paragraph(inline, _) => inline,
+                        Paragraph(inline, _) => {
+                            //parsing tags can "empty" the paragraph
+                            if inline.is_empty() {
+                                break 'setext_check;
+                            }
+                            mem::swap(&mut h_text, inline)
+                        }
                         _ => panic!(),
-                    },
-                );
-                *blank_line_depth = None;
-                match document.get_block(*obd - 1) {
+                    };
+                    *blank_line_depth = None;
+                    match document.get_block(*obd - 1) {
                     // by definition some container block
                     Document(blocks) |
                     BlockQuote(blocks, _) |
@@ -1300,8 +1543,9 @@ fn create_new_block_starts(
                     }
                     _ => panic!("should be unreachable!"),
                 }
-                *char_offset = line.len() - 1;
-                return;
+                    *char_offset = line.len() - 1;
+                    return;
+                }
             }
         }
     }
@@ -1351,12 +1595,12 @@ fn create_new_block_starts(
         dbg!(last_block_list);
         dbg!(pre_space_count);
         if pre_space_count <= 3 || line.len() == char_offset_after_spaces {
-            match dbg!(list_item_encountered(
+            match list_item_encountered(
                 line,
                 char_offset_after_spaces,
                 *effective_column_number,
                 pre_space_count,
-            )) {
+            ) {
                 Some((lt, li, new_char_offset, new_eff_column_number, new_aps)) => {
                     if last_block_list.unwrap().same_list_eq(&lt) {
                         close_paragraph(
@@ -1435,6 +1679,7 @@ fn create_new_block_starts(
             pre_space_count,
             pre_space_count,
         ) {
+            //TODO: make empty lists not interrupt either
             if open_par_above {
                 match lt {
                     OrderedList(_, 1) => (),
@@ -1520,6 +1765,24 @@ fn create_new_block_starts(
             match parent {
                 Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
                     blocks.push(atxh);
+                    *obd = new_obd + 1;
+                    *char_offset = line.len();
+                    return;
+                }
+                _ => unreachable!(),
+            }
+        }
+        if let Some(html) = html_start_encountered(line, char_offset_after_spaces) {
+            close_paragraph(
+                document,
+                &mut open_par_above,
+                &mut open_par_exists,
+                lrd_table,
+            );
+            let (parent, new_obd) = document.get_general_container(*obd);
+            match parent {
+                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
+                    blocks.push(html);
                     *obd = new_obd + 1;
                     *char_offset = line.len();
                     return;
