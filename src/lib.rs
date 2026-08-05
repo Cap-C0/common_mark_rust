@@ -636,7 +636,8 @@ fn atx_heading_encountered(line: &Vec<char>, char_offset_after_space: usize) -> 
     None
 }
 
-fn html_start_encountered(line: &Vec<char>, char_offset_after_space: usize) -> Option<Block> {
+fn html_start_encountered(line: &Vec<char>, char_offset_before_space: usize) -> Option<Block> {
+    let (char_offset_after_space, _) = consume_effective_indent(line, char_offset_before_space, 0);
     let simple_starts_with = |str: &'static str| -> Box<dyn Fn(&[char]) -> bool> {
         Box::new(move |line_in: &[char]| {
             return line_in.len() >= str.len()
@@ -661,13 +662,16 @@ fn html_start_encountered(line: &Vec<char>, char_offset_after_space: usize) -> O
             vec!["</pre>", "</script>", "</style>", "</textarea>"],
         ),
         (simple_starts_with("<!--"), vec!["-->"]),
-        (simple_starts_with("<?"), vec![">"]),
+        (simple_starts_with("<?"), vec!["?>"]),
         (exclamation, vec![">"]),
         (simple_starts_with("<![CDATA["), vec!["]]>"]),
     ] {
         if start_con(&line[char_offset_after_space..]) {
             return Some(HTMLBlock(
-                line[char_offset_after_space..].iter().map(|&c| c).collect(),
+                line[char_offset_before_space..]
+                    .iter()
+                    .map(|&c| c)
+                    .collect(),
                 !end_strs.iter().any(|s| {
                     line[char_offset_after_space..].windows(s.len()).any(|cs| {
                         cs.iter()
@@ -746,13 +750,16 @@ fn html_start_encountered(line: &Vec<char>, char_offset_after_space: usize) -> O
         "ul",
     ];
 
+    //TODO non reserved cant interrupt paragraph
+
     if line[char_offset_after_space] == '<' {
         let mut is_open_tag = true;
         let mut tag_offset = char_offset_after_space + 1;
-        if line.len() > tag_offset + 1 && line[tag_offset + 1] == '/' {
+        if line.len() > tag_offset && dbg!(line[tag_offset]) == '/' {
             tag_offset += 1;
             is_open_tag = false;
         }
+        dbg!(tag_offset);
         for rt in reserved_tags {
             if simple_starts_with(rt)(&line[tag_offset..])
                 && (line.len() == tag_offset + rt.len()
@@ -760,7 +767,10 @@ fn html_start_encountered(line: &Vec<char>, char_offset_after_space: usize) -> O
                     || simple_starts_with("/>")(&line[tag_offset + rt.len()..]))
             {
                 return Some(HTMLBlock(
-                    line[char_offset_after_space..].iter().map(|&c| c).collect(),
+                    line[char_offset_before_space..]
+                        .iter()
+                        .map(|&c| c)
+                        .collect(),
                     true,
                     BlankLine,
                 ));
@@ -804,6 +814,7 @@ fn html_start_encountered(line: &Vec<char>, char_offset_after_space: usize) -> O
                 while line_in.len() > offset && line_in[offset] != c {
                     offset += 1;
                 }
+                offset += 1;
                 return Some(offset);
             }
             while line_in.len() > offset && !" \t\"\'=<>`".contains(line_in[offset]) {
@@ -821,11 +832,13 @@ fn html_start_encountered(line: &Vec<char>, char_offset_after_space: usize) -> O
         {
             tag_offset += 1
         }
+        dbg!(tag_offset);
 
         //optional attributes
         if is_open_tag {
-            while let Some(x) = parse_attribute(&line[tag_offset..]) {
+            while let Some(x) = dbg!(parse_attribute(&line[tag_offset..])) {
                 tag_offset += x;
+                dbg!(&line[tag_offset..]);
             }
         }
         //trailing white space
@@ -845,7 +858,10 @@ fn html_start_encountered(line: &Vec<char>, char_offset_after_space: usize) -> O
 
         if line[tag_offset..].iter().all(|&c| " \t".contains(c)) {
             return Some(HTMLBlock(
-                line[char_offset_after_space..].iter().map(|&c| c).collect(),
+                line[char_offset_before_space..]
+                    .iter()
+                    .map(|&c| c)
+                    .collect(),
                 true,
                 BlankLine,
             ));
@@ -1481,6 +1497,7 @@ fn create_new_block_starts(
             return;
         }
         HTMLBlock(chars, is_open @ true, end_condition) => {
+            dbg!("HTMLBlock parent matched!");
             if let ContainsStrings(strs) = end_condition {
                 for s in strs {
                     if line[*char_offset..].windows(s.len()).any(|cs| {
@@ -1497,6 +1514,7 @@ fn create_new_block_starts(
             for &c in &line[*char_offset..] {
                 chars.push(c);
             }
+            return;
         }
         _ => (),
     }
@@ -1772,7 +1790,7 @@ fn create_new_block_starts(
                 _ => unreachable!(),
             }
         }
-        if let Some(html) = html_start_encountered(line, char_offset_after_spaces) {
+        if let Some(html) = html_start_encountered(line, *char_offset) {
             close_paragraph(
                 document,
                 &mut open_par_above,

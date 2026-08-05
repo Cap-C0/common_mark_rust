@@ -24,7 +24,7 @@ pub enum Block {
     IndentedCodeBlock(Vec<char>, Vec<Vec<char>>), // unrealized blank lines
     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
     FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
-    /// (characters, end_condition, )
+    /// (characters,is_open, end_condition, )
     HTMLBlock(Inline, bool, HTMLEndCondition),
 }
 
@@ -333,7 +333,15 @@ impl Block {
                 }
                 string_builder.push_str("</code></pre>\n");
             }
-            HTMLBlock(_items, ..) => todo!(),
+            HTMLBlock(items, ..) => {
+                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                for c in items {
+                    string_builder.push(*c);
+                }
+                string_builder.push('\n');
+            }
         }
     }
 }
