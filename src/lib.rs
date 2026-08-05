@@ -636,7 +636,11 @@ fn atx_heading_encountered(line: &Vec<char>, char_offset_after_space: usize) -> 
     None
 }
 
-fn html_start_encountered(line: &Vec<char>, char_offset_before_space: usize) -> Option<Block> {
+fn html_start_encountered(
+    line: &Vec<char>,
+    char_offset_before_space: usize,
+    open_par_above: bool,
+) -> Option<Block> {
     let (char_offset_after_space, _) = consume_effective_indent(line, char_offset_before_space, 0);
     let simple_starts_with = |str: &'static str| -> Box<dyn Fn(&[char]) -> bool> {
         Box::new(move |line_in: &[char]| {
@@ -750,8 +754,6 @@ fn html_start_encountered(line: &Vec<char>, char_offset_before_space: usize) -> 
         "ul",
     ];
 
-    //TODO non reserved cant interrupt paragraph
-
     if line[char_offset_after_space] == '<' {
         let mut is_open_tag = true;
         let mut tag_offset = char_offset_after_space + 1;
@@ -822,6 +824,10 @@ fn html_start_encountered(line: &Vec<char>, char_offset_before_space: usize) -> 
             }
             Some(offset)
         };
+        // non reserved (type 7) cant interrupt paragraph
+        if open_par_above {
+            return None;
+        }
 
         //parse tag name
         if line.len() <= tag_offset || !line[tag_offset].is_ascii_alphabetic() {
@@ -1790,7 +1796,7 @@ fn create_new_block_starts(
                 _ => unreachable!(),
             }
         }
-        if let Some(html) = html_start_encountered(line, *char_offset) {
+        if let Some(html) = html_start_encountered(line, *char_offset, open_par_above) {
             close_paragraph(
                 document,
                 &mut open_par_above,
