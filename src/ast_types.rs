@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::ast_types::{Block::*, ListType::*};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -5,6 +7,12 @@ pub enum InlineContent {
     Softbreak,
     Linebreak,
     Text(Vec<char>),
+    Emph(Vec<InlineContent>),
+    Strong(Vec<InlineContent>),
+    /// href, title, link_text
+    Link(Vec<char>, Vec<char>, Vec<InlineContent>),
+    /// src, title, link_text
+    Image(Vec<char>, Vec<char>, Vec<InlineContent>),
 }
 
 pub type Inline = Vec<char>;
@@ -465,4 +473,12 @@ mod tests {
             )
         )
     }
+}
+
+fn parse_inline(inline: &Inline) -> Vec<InlineContent> {
+    // pointer, type, count, active, potential_opener, potential_closer
+    let mut delimit_stack: VecDeque<(usize, char, usize, bool, bool, bool)> = VecDeque::new();
+    let mut out: Vec<InlineContent> = vec![];
+    for c in inline {}
+    todo!()
 }
