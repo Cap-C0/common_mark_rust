@@ -8,20 +8,6 @@ use std::mem;
 pub mod ast_types;
 pub mod inline;
 
-fn is_ascii_punctuation(c: char) -> bool {
-    let n = c as u32;
-    (0x21 <= n && n <= 0x25)
-        || (0x31 <= n && n <= 0x40)
-        || (0x5B <= n && n <= 0x60)
-        || (0x7B <= n && n <= 0x7E)
-}
-
-fn is_ascii_control(c: char) -> bool {
-    let n = c as u32;
-    // since its u32, 0 <= n by definition
-    (n <= 0x1F) || (0x7F <= n && n <= 0x7F)
-}
-
 pub fn markdown_to_html(markdown: &str) -> String {
     // first split into lines
 
@@ -889,280 +875,6 @@ fn close_paragraph(
 
     match document.get_last_block() {
         Paragraph(chars, b @ true) => {
-            let mut chars_iter = chars.iter().enumerate().peekable();
-            let mut characters_eaten: usize = 0;
-            // 'collect_lrds: loop {
-            //     let (mut link_lab, mut link_dest, mut link_tit): (Vec<char>, Vec<char>, Vec<char>) =
-            //         (vec![], vec![], vec![]);
-            //     let mut link_lab_found = false;
-            //     if let Some((start_count, '[')) = chars_iter.next() {
-            //         // take white space
-            //         while let Some(&(i, &_c @ (' ' | '\n'))) = chars_iter.peek() {
-            //             if i - start_count <= 1000 {
-            //                 let _ = chars_iter.next();
-            //             }
-            //         }
-            //         let _ = chars_iter.by_ref().take_while(|(i, c)| {
-            //             (**c == '\n' || **c == ' ') && i - start_count <= 1000
-            //         });
-            //         if let Some((i, &c)) = chars_iter.next() {
-            //             if c == ']' {
-            //                 break 'collect_lrds;
-            //             }
-            //             if i - start_count >= 1000 {
-            //                 break 'collect_lrds;
-            //             }
-            //             link_lab.push(c);
-            //         }
-            //         while let Some((i, &c)) = chars_iter.next() {
-            //             if i - start_count >= 1000 {
-            //                 break 'collect_lrds;
-            //             }
-            //             if c == '\\' {
-            //                 if i - (start_count + 1) >= 1000 {
-            //                     break 'collect_lrds;
-            //                 }
-            //                 if let Some((i, &c_nxt)) = chars_iter.next() {
-            //                     if i - start_count >= 1000 {
-            //                         break 'collect_lrds;
-            //                     }
-            //                     link_lab.push(c);
-            //                     link_lab.push(c_nxt);
-            //                     continue;
-            //                 } else {
-            //                     break 'collect_lrds;
-            //                 }
-            //             }
-            //             if c == '[' {
-            //                 break 'collect_lrds;
-            //             }
-            //             if c == ']' {
-            //                 if let Some((_, &c_nxt)) = chars_iter.next() {
-            //                     if c_nxt == ':' {
-            //                         link_lab_found = true;
-            //                         break;
-            //                     }
-            //                 }
-            //             }
-            //             link_lab.push(c);
-            //         }
-            //     }
-            //
-            //     if !link_lab_found {
-            //         break 'collect_lrds;
-            //     }
-            //
-            //     dbg!(&link_lab);
-            //
-            //     while let Some(&(_i, &_c @ (' ' | '\n'))) = chars_iter.peek() {
-            //         let _ = chars_iter.next();
-            //     }
-            //
-            //     let mut link_dest_found = false;
-            //     let mut valid_lrd_found = false;
-            //
-            //     'match_link_dest: {
-            //         match chars_iter.by_ref().next() {
-            //             Some((_, &'<')) => {
-            //                 while let Some((_, &c)) = chars_iter.next() {
-            //                     if c == '\\' {
-            //                         if let Some((_, &c_nxt)) = chars_iter.next() {
-            //                             if c_nxt == '\n' {
-            //                                 break;
-            //                             }
-            //                             if !is_ascii_punctuation(c_nxt) {
-            //                                 link_dest.push(c);
-            //                             }
-            //                             link_dest.push(c_nxt);
-            //                             continue;
-            //                         } else {
-            //                             break 'collect_lrds;
-            //                         }
-            //                     } else if c == '<' || c == '\n' {
-            //                         break;
-            //                     } else if c == '>' {
-            //                         if let Some(&(_, &cnxt)) = chars_iter.peek() {
-            //                             if !"\n ".contains(cnxt) {
-            //                                 break 'collect_lrds; // this means there are non space
-            //                                 // seperated chars after the dest, so
-            //                                 // immediate fail.
-            //                             }
-            //                         } else {
-            //                             valid_lrd_found = true; // line ends here, so can't be messed
-            //                             // up
-            //                         }
-            //                         link_dest_found = true;
-            //                         break;
-            //                     } else {
-            //                         link_dest.push(c);
-            //                     }
-            //                 }
-            //             }
-            //             Some((_, &c)) => {
-            //                 let mut p_stack = 0;
-            //                 if is_ascii_control(c) {
-            //                     break 'collect_lrds;
-            //                 }
-            //                 if c == ')' {
-            //                     break 'collect_lrds;
-            //                 }
-            //                 if c == '(' {
-            //                     p_stack += 1;
-            //                 }
-            //                 if c == '\\' {
-            //                     if let Some((i, &c_nxt)) = chars_iter.next() {
-            //                         if is_ascii_control(c_nxt) {
-            //                             break 'collect_lrds;
-            //                         }
-            //                         if "\n ".contains(c_nxt) {
-            //                             link_dest.push(c);
-            //                             link_dest_found = true; // p_stack is irrelevent here
-            //                             if c_nxt == '\n' {
-            //                                 valid_lrd_found = true;
-            //                                 characters_eaten = i + 1;
-            //                                 break 'match_link_dest;
-            //                             }
-            //                         }
-            //                         link_dest.push(c);
-            //                         link_dest.push(c_nxt);
-            //                     } else {
-            //                         break 'collect_lrds;
-            //                     }
-            //                 }
-            //                 link_dest.push(c);
-            //                 while let Some((i, &c)) = chars_iter.next() {
-            //                     if is_ascii_control(c) {
-            //                         break 'collect_lrds;
-            //                     }
-            //                     if c == ')' {
-            //                         if p_stack == 0 {
-            //                             break 'collect_lrds;
-            //                         }
-            //                         p_stack -= 1;
-            //                     }
-            //                     if c == '(' {
-            //                         p_stack += 1;
-            //                     }
-            //                     if c == '\\' {
-            //                         if let Some((i_nxt, &c_nxt)) = chars_iter.next() {
-            //                             if is_ascii_control(c_nxt) {
-            //                                 break 'collect_lrds;
-            //                             }
-            //                             if "\n ".contains(c_nxt) {
-            //                                 link_dest.push(c);
-            //                                 link_dest_found = p_stack == 0;
-            //                                 if c_nxt == '\n' {
-            //                                     valid_lrd_found = link_dest_found;
-            //                                     characters_eaten = i_nxt + 1;
-            //                                 }
-            //                                 break 'match_link_dest;
-            //                             }
-            //                             link_dest.push(c);
-            //
-            //                             link_dest.push(c_nxt);
-            //                         } else {
-            //                             break 'collect_lrds;
-            //                         }
-            //                     } else if "\n ".contains(c) {
-            //                         link_dest_found = p_stack == 0;
-            //                         if c == '\n' {
-            //                             valid_lrd_found = link_dest_found;
-            //                             characters_eaten = i + 1;
-            //                         }
-            //                         break 'match_link_dest;
-            //                     } else {
-            //                         link_dest.push(c);
-            //                     }
-            //                 }
-            //                 // at this point, the chars must have ended
-            //                 link_dest_found = p_stack == 0;
-            //                 valid_lrd_found = link_dest_found;
-            //                 characters_eaten = chars.len();
-            //             }
-            //             _ => break 'collect_lrds,
-            //         }
-            //     }
-            //
-            //     dbg!(&link_dest);
-            //     if !link_dest_found {
-            //         break 'collect_lrds;
-            //     }
-            //
-            //     while let Some(&(_i, &_c @ ' ')) = chars_iter.peek() {
-            //         let _ = chars_iter.next();
-            //     }
-            //     let mut link_tit_found = false;
-            //
-            //     'match_link_title: {
-            //         match chars_iter.next() {
-            //             Some((i, &c @ ('\'' | '\"' | '(' | '\n'))) => {
-            //                 let mut dl = c;
-            //                 if c == '\n' {
-            //                     characters_eaten = i + 1;
-            //                     valid_lrd_found = true;
-            //                     // even if the new line fails.
-            //                     if let Some((_, &cnxt @ ('\'' | '\"' | '('))) = chars_iter.next() {
-            //                         dl = cnxt;
-            //                     } else {
-            //                         break 'match_link_title;
-            //                     }
-            //                 }
-            //                 let dlc = match dl {
-            //                     '\'' => '\'',
-            //                     '\"' => '\"',
-            //                     '(' => ')',
-            //                     _ => unreachable!(),
-            //                 };
-            //                 while let Some((_i, &c)) = chars_iter.next() {
-            //                     if c == '\\' {
-            //                         if let Some((_i, &c_nxt)) = chars_iter.next() {
-            //                             link_tit.push(c);
-            //                             link_tit.push(c_nxt);
-            //                             continue;
-            //                         } else {
-            //                             break 'match_link_title;
-            //                         }
-            //                     } else if c == '(' && dl == '(' {
-            //                         break 'match_link_title; //cannot contain opening delimiter
-            //                     //unescaped
-            //                     } else if c == dlc {
-            //                         while let Some((i, &c_last)) = chars_iter.next() {
-            //                             if c_last == ' ' {
-            //                                 continue;
-            //                             }
-            //                             if c_last == '\n' {
-            //                                 link_tit_found = true;
-            //                                 valid_lrd_found = true;
-            //                                 characters_eaten = i + 1;
-            //                                 break 'match_link_title; //finished the line w/out
-            //                                 //problem
-            //                             }
-            //                             break 'match_link_title; //found a bad character in line,
-            //                             //cant make title
-            //                         }
-            //                         // if we are here, it means we reached the end of the iterator
-            //                         link_tit_found = true;
-            //                         valid_lrd_found = true;
-            //                         characters_eaten = chars.len();
-            //                         break 'match_link_title; //found a bad character in line,
-            //                     }
-            //                     link_tit.push(c);
-            //                 }
-            //             }
-            //             Some((_, _)) => break 'collect_lrds,
-            //             None => valid_lrd_found = true,
-            //         }
-            //     }
-            //
-            //     if valid_lrd_found {
-            //         lrd_table
-            //             .entry(normalize_label(link_lab))
-            //             .or_insert((link_dest, if link_tit_found { link_tit } else { vec![] }));
-            //         continue 'collect_lrds;
-            //     }
-            //     break 'collect_lrds;
-            // }
-
             let mut char_offset = 0;
             let mut chars_eaten = 0;
             'collect_lrds: loop {
@@ -1230,7 +942,7 @@ fn close_paragraph(
                     {
                         link_title = Some((char_offset + 1, char_offset + offset_dif - 1));
                         char_offset = final_whitespace_pointer
-                            + if dbg!(final_whitespace_pointer) >= dbg!(chars.len()) {
+                            + if final_whitespace_pointer >= chars.len() {
                                 0
                             } else {
                                 1
@@ -1251,7 +963,6 @@ fn close_paragraph(
                             }),
                         ));
                     chars_eaten = char_offset;
-                    dbg!(&lrd_table);
                     continue 'collect_lrds;
                 }
                 break 'collect_lrds;
@@ -1269,25 +980,6 @@ fn close_paragraph(
     *open_par_above = false;
     *open_par_exists = false;
 }
-
-// fn normalize_label(label: Vec<char>) -> Vec<char> {
-//     let mut lab_out = vec![];
-//     let mut char_iter = label.iter();
-//
-//     let mut seen_space = false;
-//     while let Some(&c) = char_iter.next() {
-//         if " \n".contains(c) {
-//             seen_space = true
-//         } else {
-//             if seen_space {
-//                 seen_space = false;
-//                 lab_out.push(' ');
-//             }
-//             c.to_lowercase().for_each(|cl| lab_out.push(cl));
-//         }
-//     }
-//     lab_out
-// }
 
 #[cfg(test)]
 mod cp_tests {

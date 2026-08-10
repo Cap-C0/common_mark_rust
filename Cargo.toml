@@ -3,6 +3,13 @@ name = "common_mark_rust"
 version = "0.1.0"
 edition = "2024"
 
+[build-dependencies]
+quote = "1.0.46"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+syn = "2.0.119"
+
+
 [dependencies]
 serde = "1.0.228"
 serde_json = "1.0.150"

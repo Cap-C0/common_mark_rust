@@ -9,8 +9,10 @@ dependencies = [
  "json_to_test_macro",
  "ntest",
  "pretty_assertions",
+ "quote",
  "serde",
  "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]

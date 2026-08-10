@@ -12,4 +12,7 @@
   - [x] fix space counting code
     - [x] atx_heading
 - [x] implement correct new line code
-
+- [ ] create scripts for setting up the repo from a fresh pull
+  - [ ] curl
+    - [ ] spec
+    - [ ] unicode 
