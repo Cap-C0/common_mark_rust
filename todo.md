@@ -12,7 +12,23 @@
   - [x] fix space counting code
     - [x] atx_heading
 - [x] implement correct new line code
-- [ ] create scripts for setting up the repo from a fresh pull
-  - [ ] curl
-    - [ ] spec
-    - [ ] unicode 
+- [ ] unicode property macro
+- [x] create scripts for setting up the repo from a fresh pull
+  - [x] curl
+    - [x] spec
+    - [x] unicode 
+    - [x] html characters
+- [x] create build scripts for unicode properties and json_tests 
+- [ ] inline parsing
+  - [x] code spans
+  - [ ] emphasis.
+  - [ ] links
+  - [ ] Images
+  - [ ] Autolinks
+  - [ ] html
+  - [ ] soft line break
+  - [ ] hard line breaks
+- [ ] text stuff
+  - [ ] entity and numeric char references.
+  - [ ] backslash escapes.
+  - [ ] insecure characters

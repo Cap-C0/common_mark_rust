@@ -1,7 +1,10 @@
-use crate::Inline;
-use crate::inline::Delimiter::*;
+use crate::{Inline, inline};
+use crate::inline::InlineTextComponent::*;
 use crate::inline::{InlineContent::*};
+use core::panic;
+use std::arch::aarch64;
 use std::collections::{HashMap, VecDeque};
+use std::{mem, vec};
 
 include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 
@@ -11,7 +14,7 @@ include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum InlineContent {
     Softbreak,
-    Linebreak,
+    Hardbreak,
     Text(usize, usize),
     Emph(Vec<InlineContent>),
     Strong(Vec<InlineContent>),
@@ -19,7 +22,9 @@ pub enum InlineContent {
     Link((usize, usize), (usize, usize), Vec<InlineContent>),
     /// src, title, link_text
     Image((usize, usize), (usize, usize), Vec<InlineContent>),
-    Code((usize,usize))
+    Code((usize,usize)),
+    // for use when swapping memory
+    Dummy, 
 }
 /*
  * returns Some(k) if text matches [.*(c| c != " \t\n")*.*]
@@ -131,6 +136,8 @@ pub fn parse_link_destination(text: &[char]) -> Option<(usize, bool)> {
     None
 }
 
+
+
 pub fn parse_link_title(text: &[char]) -> Option<usize> {
     let mut offset = 0;
     if offset >= text.len() {
@@ -159,30 +166,85 @@ pub fn parse_link_title(text: &[char]) -> Option<usize> {
 }
 
 
-enum Delimiter {
-    /// Count, potential_opener, potential_closer
-    Asts(usize, bool,bool),
-    /// Count, potential_opener, potential_closer
-    Unds(usize,bool,bool),
+    
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum InlineTextComponent {
+    /// Total_count,Count_consumed, potential_opener, potential_closer
+    Asts(usize,usize, bool,bool),
+    /// Total_count,Count_consumed, potential_opener, potential_closer
+    Unds(usize, usize, bool,bool),
     ImgOpen,
     /// active
     LinkOpen(bool),
     BrackClose,
+    /// Total_count
     BackTick(usize),
     AngleOpen,
-    AngleClose
+    AngleClose,
+    /// Offset to last char (exclusive)
+    TextualContent(usize),
+    CompletedContent(InlineContent),
+}
+
+impl InlineTextComponent {
+    fn to_text_comp(self) -> InlineTextComponent {
+        match self {
+            Unds(total,consumed,..) | Asts(total, consumed,.. ) => {
+                TextualContent(total - consumed)
+            },
+            BackTick(count) => {
+                TextualContent(count)
+            }
+            ImgOpen => TextualContent(2),
+            TextualContent(_) | CompletedContent(_) => self,
+            _ => TextualContent(1),
+        }
+    }
+    fn to_inline_content(&mut self, char_offset: usize) -> InlineContent {
+        match self {
+            Unds(total,consumed,..) | Asts(total, consumed,.. ) => {
+                Text(char_offset, char_offset + (*total - *consumed))
+            },
+            BackTick(count) | TextualContent(count)=> {
+                Text(char_offset, char_offset + *count)
+            }
+            ImgOpen => Text(char_offset, char_offset+ 2),
+            CompletedContent(c) => {
+                let mut dummy = Dummy;
+                mem::swap(c, &mut dummy);
+                dummy
+            }
+            _ => Text(char_offset, char_offset + 1),
+        }
+    }
+}
+
+struct DLLnode {
+    beginning_char_index: usize,
+    inline_component: InlineTextComponent,
+    index_of_prev: Option<usize>,
+    index_of_next: Option<usize>,
+    index_of_this: usize, // this is helpful for getting around borrow checker shenanigans
+}
+
+impl DLLnode {
+    fn new(begin_index: usize, component: InlineTextComponent,  prev_index: Option<usize>,next_index: Option<usize>,this_index: usize) -> Self {
+        DLLnode{
+            beginning_char_index: begin_index,
+            inline_component: component,
+            index_of_prev: prev_index,
+            index_of_next: next_index,
+            index_of_this: this_index,
+        }
+    } 
 }
 
 // we will be approxiamating a double linked list in rust by having each item in the list keep
-// track of the offset to the next item, so we can "delete" dls[j] by setting dls[j-1].otn = 2
-// and dls[j+1].otp = 2. Also keep track of an initial offset for when we "delete" dls[0] or 
+// track of the index of the next item.
 struct FakeDelimiterDLL {
-    // char_offset, dl, index_of_prev, index_of_next
-    dl_stack: Vec<(usize, Delimiter, Option<usize>,Option<usize>)>,
-    // I think offset will be more efficent than Option<index> as you 
-    // dont have to "set" the one behind you when you push to the stack.
-    // the tradeoff is, you have to check against the stack size to see if 
-    // a value is at the end or beginning instead of just seeing if it is None.
+    // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
+    dl_stack: Vec<DLLnode>,
     // Since we only push to the dll at the beginning, we do not need to keep track of 
     // "freeing" things for later. (monotonic?)
     initial_index: Option<usize>,
@@ -190,29 +252,100 @@ struct FakeDelimiterDLL {
 }
 
 impl FakeDelimiterDLL {
-    // this is only called in the first phase,
-    // this means indexes are simply increasing by 1.
-    fn push_back(&mut self,char_offset:usize, dl: Delimiter) {
+    fn push_back(&mut self,begin_index:usize,dl: InlineTextComponent) {
         if self.initial_index.is_none() {
             self.initial_index = Some(0);
             self.final_index = Some(0);
-            self.dl_stack.push((char_offset, dl, None, None));
+            self.dl_stack.push(DLLnode::new(begin_index, dl, None, None, self.dl_stack.len()));
         } else {
-             self.dl_stack.push((char_offset, dl, self.final_index, None));
-             self.dl_stack[self.final_index.unwrap()].3 = Some(self.dl_stack.len() - 1);
+             self.dl_stack.push(DLLnode::new(begin_index, dl, self.final_index, None, self.dl_stack.len()));
+             self.dl_stack[self.final_index.unwrap()].index_of_next = Some(self.dl_stack.len() - 1);
              self.final_index = Some(self.dl_stack.len() - 1);
         }
     }
 
-    fn delete_while_char_offset_lt(&mut self, from_index: usize, min_char_off: usize) {
-        let current_list_pos = from_index;
-        let (..,mut next_index) = self.dl_stack[current_list_pos];
-        while next_index.is_some_and(|i| self.dl_stack[i].0 < min_char_off) {
-            next_index = self.dl_stack[next_index.unwrap()].2;
-        }
-        self.dl_stack[from_index].2 = next_index;
+    fn get_first(&self) -> Option<&DLLnode> {
+        self.initial_index.map(|i| &self.dl_stack[i])
     }
+
+    fn get_first_mut(&mut self) ->Option<&mut DLLnode> {
+        self.initial_index.map(|i| &mut self.dl_stack[i])
+    }
+
+    fn get_last(&self) -> Option<&DLLnode> {
+        self.final_index.map(|i| &self.dl_stack[i])
+    }
+
+    fn get_last_mut(&mut self) ->Option<&mut DLLnode> {
+        self.final_index.map(|i| &mut self.dl_stack[i])
+    }
+
+    fn get(& self, index: usize) -> &DLLnode {
+        &self.dl_stack[index]
+    }
+
+    fn get_mut(&mut self, index: usize) -> &mut DLLnode {
+        &mut self.dl_stack[index]
+    }
+
+    fn get_next(&self, node: &DLLnode) -> Option<&DLLnode> {
+        node.index_of_next.map(|i|{
+            &self.dl_stack[i]
+        })
+    }
+
+    fn get_next_mut(&mut self, node: &DLLnode) -> Option<&mut DLLnode> {
+        node.index_of_next.map(|i|{
+            &mut self.dl_stack[i]
+        })
+    }
+
+    fn delete_stack_above(&mut self, node_index: usize) {
+        self.dl_stack[node_index].index_of_next = None;
+        self.final_index = Some(node_index);
+    }
+
+    fn delete_stack_until_node(&mut self, bottom_node_index: usize, top_node_index: usize) {
+        self.dl_stack[bottom_node_index].index_of_next = Some(top_node_index);
+        self.dl_stack[top_node_index].index_of_prev = Some(bottom_node_index);
+    }
+
+    fn delete_stack_above_including(&mut self, node_index: usize) {
+        let prev_node_op = self.dl_stack[node_index].index_of_prev.map(|i| &mut self.dl_stack[i]);
+        if let Some(prev_node) = prev_node_op {
+            prev_node.index_of_next = None;
+            self.final_index = Some(prev_node.index_of_this);
+        } else {
+            self.initial_index = None;
+            self.final_index = None;
+        }
+    }
+
+    fn get_index_of_next(&self, index: usize) -> Option<usize> {
+        self.dl_stack[index].index_of_next
+    }
+
+    fn get_index_of_prev(&self, index: usize) -> Option<usize> {
+        self.dl_stack[index].index_of_prev
+    }
+
+    fn remove_at_index(&mut self, index: usize) {
+        let next = self.dl_stack[index].index_of_next;
+        let prev = self.dl_stack[index].index_of_prev;
+        if prev.is_some() {
+            self.dl_stack[prev.unwrap()].index_of_next = next;
+        } else {
+            self.initial_index = next;
+        }
+        if next.is_some() {
+            self.dl_stack[next.unwrap()].index_of_prev = prev;
+        } else {
+            self.final_index = prev;
+        }
+    }
+
 }
+
 
 // think about what functionality we will need as we go along stack
 
@@ -235,10 +368,15 @@ pub fn parse_inline(inline: &Inline, lrd_table: &HashMap<Vec<char>, (Vec<char>, 
         final_index: None
     };
     let mut char_iter = inline.iter().enumerate().peekable();
+    let mut text_begin = 0;
 
-
-    //construct entire dll
-    while let Some((offset, &c)) = char_iter.next() {
+    let mut add_text_to_stack = |sicl: &mut FakeDelimiterDLL, text_begin:usize, text_end: usize| {
+        if text_end > text_begin {
+            sicl.push_back(text_begin, InlineTextComponent::TextualContent(text_end - text_begin));
+        }
+    };
+    //do the function!
+    while let Some((char_index, &c)) = char_iter.next() {
         match c {
             '\\' => {
                 if char_iter.peek().map_or(false, |&(_,&d)| d != '`'){
@@ -246,62 +384,108 @@ pub fn parse_inline(inline: &Inline, lrd_table: &HashMap<Vec<char>, (Vec<char>, 
                 }
             },
             '`' =>{
+                add_text_to_stack(&mut delimit_stack,text_begin, char_index);
                 let mut tick_count = 1;
                 while char_iter.peek().map_or(false, |&(_, &c)| c == '`') {
                     tick_count += 1;
                     char_iter.next();
                 }
-                delimit_stack.push_back(offset, BackTick(tick_count));
+                // then look from beginning of stack for a matching tick_count
+                let mut next_node = delimit_stack.get_first();
+                while let Some(dllnode) = next_node {
+                    if let BackTick(x) = dllnode.inline_component {
+                        if x == tick_count {
+                            break;
+                        }
+                    }
+                    next_node = delimit_stack.get_next(dllnode);
+                }
+                
+                if let Some(matching_node) = next_node {
+                    let starting_char_index = matching_node.beginning_char_index;
+                    let index_of_matching = matching_node.index_of_this;
+                    delimit_stack.delete_stack_above_including(index_of_matching);
+                    delimit_stack.push_back(starting_char_index, CompletedContent(
+                            Code((starting_char_index + tick_count, char_index))
+                            ));
+                }
+                else {
+                    // otherwise if none found, add to stack
+                    delimit_stack.push_back(char_index, BackTick(tick_count));
+                }
+                text_begin = char_index + tick_count;
             },
             '_'|'*' => {
+                add_text_to_stack(&mut delimit_stack, text_begin,char_index);
                 let mut dc = 1; //delimiter count
                 while char_iter.peek().map_or(false, |&(_, &d)| d == c) {
                     dc += 1;
                     char_iter.next();
                 }
-                let punc_preceded = offset > 0 && inline[offset - 1].is_unicode_punctuation();
-                let punc_followed = offset + dc < inline.len() && inline[offset  + dc].is_unicode_punctuation();
-                let is_left_flanking: bool = offset + dc <= inline.len() &&    //not_whitespace_followed
-                    !(inline[offset + dc].is_whitespace()) &&
+                let punc_preceded = char_index > 0 && inline[char_index - 1].is_unicode_punctuation();
+                let punc_followed = char_index + dc < inline.len() && inline[char_index  + dc].is_unicode_punctuation();
+                let is_left_flanking: bool = char_index + dc <= inline.len() &&    //not_whitespace_followed
+                    !(inline[char_index + dc].is_whitespace()) &&
                     (
                         !punc_followed ||
                         (punc_followed &&
-                            (offset <= 0 || 
-                            inline[offset - 1].is_whitespace() || 
+                            (char_index <= 0 || 
+                            inline[char_index - 1].is_whitespace() || 
                             punc_preceded)
                         )
                     ); // or followed by punc and preceded by ws or punc
-                let is_right_flanking: bool = offset > 0 &&// not_whitespace_preceded
-                    !(inline[offset - 1].is_whitespace()) &&
+                let is_right_flanking: bool = char_index > 0 &&// not_whitespace_preceded
+                    !(inline[char_index - 1].is_whitespace()) &&
                     (
                         !punc_preceded ||
                         (punc_preceded && 
-                            (offset + dc >= inline.len() ||
-                            inline[offset + dc].is_whitespace() ||
+                            (char_index + dc >= inline.len() ||
+                            inline[char_index + dc].is_whitespace() ||
                             punc_followed)
                         )
                     );
-                delimit_stack.push_back(offset, 
+                delimit_stack.push_back(char_index, 
                     match c {
-                        '*' => {Asts(dc, is_left_flanking,is_right_flanking)}
-                        '_' => {Unds(dc, is_left_flanking,is_right_flanking)},
+                        '*' => {Asts(dc,0, is_left_flanking,is_right_flanking)}
+                        '_' => {Unds(dc,0, is_left_flanking,is_right_flanking)},
                         _ => panic!()
                     }
                 );
+                text_begin = char_index + dc;
             },
             '!' => {
                     if char_iter.peek().map_or(false, |&(_,&d)| d == '[') {
+                        add_text_to_stack(&mut delimit_stack,text_begin, char_index);
                         char_iter.next();
-                        delimit_stack.push_back(offset, ImgOpen);
+                        delimit_stack.push_back(char_index, ImgOpen);
+                        text_begin = char_index + 2;
                     }
                 }
+            '[' => {
+                add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                delimit_stack.push_back(char_index, LinkOpen(true));
+                text_begin = char_index + 1;
+            }
+            ']' => {
+                add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                delimit_stack.push_back(char_index, BrackClose);
+                text_begin = char_index + 1;
+                todo!();
+            },
+            '<' => {
+                add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                delimit_stack.push_back(char_index, AngleOpen);
+                text_begin = char_index + 1;
+            }
             _ => {
                 let _ = match c {
                     ']' => Some(BrackClose),
                     '<' => Some(AngleOpen),
                     '>' => Some(AngleClose),
                     _ => None
-                }.map(|dl| delimit_stack.push_back(offset, dl));
+                }.map(|dl| {
+                    add_text_to_stack(&mut delimit_stack,text_begin, char_index);
+                    delimit_stack.push_back(char_index, dl)});
             },
         }
 
@@ -311,7 +495,7 @@ pub fn parse_inline(inline: &Inline, lrd_table: &HashMap<Vec<char>, (Vec<char>, 
     // deepest nested link has priority, boolean returns if a link was found.
 
     // now at end of line we look through our stacks
-    todo!()
+    process_emphasis(None, &mut delimit_stack)
 }
 
 struct StackProcessContext<'a, 'b> {
@@ -319,67 +503,270 @@ struct StackProcessContext<'a, 'b> {
     lrd_table: &'b HashMap<Vec<char>, (Vec<char>, Vec<char>)>,
 }
 
+
+// line beginning spaces are taken in ast_construction phase.
+// fn process_text(start_char_offset: usize, end_char_offset: usize, chars: &[char]) -> Vec<InlineContent> {
+//     let mut out = vec![];
+//     let mut space_count = 0;
+//     let mut current_off = start_char_offset;
+//     let mut line_start = current_off;
+//     while current_off < end_char_offset {
+//         if chars[current_off] == ' ' {
+//             space_count += 1;
+//         } else if chars[current_off] == '\n' {
+//             out.push(TextualContent(line_start, current_off - space_count));
+//             if space_count >= 2 {
+//                 out.push(Hardbreak);
+//             } else {
+//                 out.push(Softbreak);
+//             }
+//             current_off +=1;
+//             space_count = 0;
+//             line_start = current_off;
+//         } else if chars[current_off] == '\\' {
+//             if current_off +1 < end_char_offset {
+//                 if chars[current_off + 1] == '\n'{
+//                     out.push(TextualContent(line_start, current_off - 1));
+//                     out.push(Hardbreak);
+//                     current_off += 2;
+//                     space_count = 0;
+//                     line_start = current_off;
+//                 }
+//                 else {
+//                     current_off +=1;
+//                     space_count = 0;
+//                 }
+//             }
+//                 else {
+//                     current_off +=1;
+//                     space_count = 0;
+//                 }
+//         } else {
+//             current_off += 1;
+//             space_count = 0;
+//         }
+//     }
+//     let final_text_off = if end_char_offset == chars.len() {current_off - space_count} else {
+//         current_off
+//     };
+//     out.push(TextualContent(line_start, final_text_off));
+//     out
+// }
+
+// fn remove_delims_in_range(start: usize, end: usize) -> Vec<InlineContent> {
+//
+// }
+//
+// fn make_emph(opener_index_in_stack: usize, closer_index_in_stack_usize,ticks_consumed: usize, possible_children: &mut Vec<(InlineContent, usize)>, context: &mut StackProcessContext) -> (Vec<InlineContent>) {
+//
+// }
+
 // fsub: forward search upper bound
 // boolean tells caller if it contains a link, deepest nested link has priority
-fn process_emphasis(start_item_index:usize, fsub: Option<usize>, context: &mut StackProcessContext) -> (Vec<InlineContent>, bool, Option<usize>){
-    let mut inside_content: Vec<(InlineContent,usize)> = vec![]
-    let mut out = vec![];
-    let mut current_index = start_item_index;
-    //If one of the delimiters can both open and close emphasis, then the sum of the lengths
-    //of the delimiter runs containing the opening and closing delimiters must not be a
-    //multiple of 3 unless both lengths are multiples of 3.
-    //Even though we conceptually "eat" them to match, that doesnt mean we actually eat them for
-    //rule number 9
-    // bool = pot_op && pot_clos
+fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) -> Vec<InlineContent>{
+    let mut current_position = stack_bottom.map_or(stack.initial_index, 
+        |i|{
+            stack.get(i).index_of_next
+        });
+    // because of how the dll is implemented, if a and b are actual pointers to dllnodes (indexes), 
+    // then a < b implies a is earlier in the stack than b and its delimiter is earlier in the line
+
     // only set op_bot when we find a non_matched closer_delimiter
-    let mut openers_bottom_and_closing: [Option<(usize,usize,bool)>;3] = [None;3];
-    let mut openers_bottom_not_closing: [Option<(usize,usize,bool)>;3] = [None;3];
-    let mut unds_stac:Vec<(usize,usize,bool)> = vec![];
-    let mut asts_stack: Vec<(usize,usize) = 
+    let mut openers_bottom_asts_and_opening: [Option<usize >;3] = [stack_bottom;3];
+    let mut openers_bottom_asts_not_opening: [Option<usize >;3] = [stack_bottom;3];
+    let mut openers_bottom_unds_and_opening: [Option<usize >;3] = [stack_bottom;3];
+    let mut openers_bottom_unds_not_opening: [Option<usize >;3] = [stack_bottom;3];
+    // index_in_fakedldll, char_offset
+    let mut unds_op_stack:Vec<usize > = vec![];
+    let mut asts_op_stack: Vec<usize > = vec![];
 
 
     //the one that opens later takes precedence
-    while fsub.map_or(true, |n| current_index < n) {
-        match context.stack.dl_stack[current_index].1 {
-            ImgOpen | LinkOpen(_) => {
-                todo!()
-            }
-            BackTick(_) | AngleOpen => {
-                todo!()
-            }
-            Asts(count, pot_op, pot_clos) => {
-                let mut ast_stack_offset = asts_stack
+    while let Some(cp_index) = current_position {
+        let current_dllnode = stack.get(cp_index);
+        let current_beginning_char_index = current_dllnode.beginning_char_index;
+        match current_dllnode.inline_component {
+            Asts(total_count, consumed, pot_op, pot_clos) => {
+                let stack_bottom_this_type = if pot_op {openers_bottom_asts_not_opening[total_count % 3] } else {
+                    openers_bottom_asts_and_opening[total_count % 3]
+                };
                 if pot_clos {
-                    while !asts_stack.is_empty() && count > 0 {
-                        let (&dl_stack_index, opener_ast_count, &op_and_close) = asts_stack.last().unwrap();
-                        
-                        
+                    let mut asts_op_stack_offset = asts_op_stack.len() - 1;
+                    let this_op_bottom = &mut
+                        if pot_op {
+                            openers_bottom_asts_and_opening[total_count % 3]
+                        } else {
+                            openers_bottom_asts_not_opening[total_count % 3]
+                        };
+                    let mut matching_dl_index_op = None;
+                    while asts_op_stack_offset >= 0 && this_op_bottom.map_or(true, |x| asts_op_stack[asts_op_stack_offset] > x){
+                        if let Asts(op_tc, op_used, true, op_pc) = stack.get(asts_op_stack[asts_op_stack_offset]).inline_component {
+                            if (op_pc || pot_op) && (total_count + op_tc % 3 == 0 && !(total_count %3 == 0 && op_tc %3 == 0)) {
+                                asts_op_stack_offset -= 1;
+                                continue;
+                            } else {
+                                matching_dl_index_op = Some(asts_op_stack[asts_op_stack_offset]);
+                                break;
+                            }
+                        } else {
+                            panic!("should be some asts here")
+                        }
                     }
-                }
-            }
-            Unds(count, pot_op, pot_clos) => {
-
-            }
-            BrackClose | AngleClose => {
-                if let Some(nxt) = context.stack.dl_stack[current_index].3 {
-                    current_index = nxt
+                    if let Some(matching_dl_index) = matching_dl_index_op {
+                        let (op_tc, op_used) = match stack.get(matching_dl_index).inline_component {
+                            Asts(ot, ou,..) => (ot, ou),
+                            _ => panic!("should be Asts here")
+                        };
+                        let matching_dl_unconsumed = op_tc - op_used;
+                        let this_dl_unconsumed = total_count - consumed;
+                        let is_strong = matching_dl_unconsumed >=2 && this_dl_unconsumed >= 2;
+                        let mut emph_children: Vec<InlineContent> = vec![];
+                        let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
+                        while node_to_eat_index_op.map_or(false, |ntei|stack.get(ntei).beginning_char_index < current_beginning_char_index) {
+                            let nte = stack.get_mut(node_to_eat_index_op.unwrap());
+                            emph_children.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
+                            node_to_eat_index_op = nte.index_of_next;
+                        }
+                        stack.delete_stack_until_node(matching_dl_index, cp_index);
+                        stack.push_back(stack.get(matching_dl_index).beginning_char_index + op_tc, 
+                            CompletedContent(
+                                if is_strong {
+                                    Strong(emph_children)
+                                } else {
+                                    Emph(emph_children)
+                                }
+                                )
+                            );
+                        let mut used_is_total;
+                        if let Asts(total, used,..) = &mut stack.get_mut(cp_index).inline_component {
+                            *used += if is_strong {2} else {1                                    };
+                            used_is_total = *used == *total;
+                        } else {
+                            panic!("expect unds");
+                        }
+                            if used_is_total {
+                                stack.remove_at_index(cp_index);
+                            }
+                        if let Asts(total, used,..) = &mut stack.get_mut(matching_dl_index).inline_component {
+                            *used += if is_strong {2} else {1};
+                            used_is_total = *used == *total;
+                        }
+                        if used_is_total {
+                                stack.remove_at_index(matching_dl_index);
+                                asts_op_stack.remove(asts_op_stack_offset);
+                            }
+                        continue;
+                    } else {
+                        *this_op_bottom = stack.get(cp_index).index_of_prev;
+                        if pot_op {
+                            unds_op_stack.push(stack.get(cp_index).index_of_this);
+                        }
+                        // we don't need a notion of "deleting" non potential_openers Since
+                        // we track backwards in a different stack than this.
+                        current_position = stack.get(cp_index).index_of_next;
+                    }
                 } else {
-                    break;
+                    asts_op_stack.push(cp_index);
                 }
             }
+            Unds(total_count,consumed, pot_op, pot_clos) => {
+                todo!();
+                // let stack_bottom_this_type = if pot_op {openers_bottom_asts_not_opening[total_count % 3] } else {
+                //     openers_bottom_unds_and_opening[total_count % 3]
+                // };
+                // if pot_clos {
+                //     let mut unds_op_stack_offset = unds_op_stack.len() - 1;
+                //     let this_op_bottom = &mut
+                //         if pot_op {
+                //             openers_bottom_unds_and_opening[total_count % 3]
+                //         } else {
+                //             openers_bottom_unds_not_opening[total_count % 3]
+                //         };
+                //     let mut matching_dl_index_op = None;
+                //     while unds_op_stack_offset >= 0 && this_op_bottom.map_or(true, |x| unds_op_stack[unds_op_stack_offset] > x){
+                //         if let Unds(op_tc, op_used, true, op_pc) = stack.get(unds_op_stack[unds_op_stack_offset]).inline_component {
+                //             if (op_pc || pot_op) && (total_count + op_tc % 3 == 0 && !(total_count %3 == 0 && op_tc %3 == 0)) {
+                //                 unds_op_stack_offset -= 1;
+                //                 continue;
+                //             } else {
+                //                 matching_dl_index_op = Some(unds_op_stack[unds_op_stack_offset]);
+                //                 break;
+                //             }
+                //         } else {
+                //             panic!("should be some unds here")
+                //         }
+                //     }
+                //     if let Some(matching_dl_index) = matching_dl_index_op {
+                //         if let Unds(op_tc, op_used,..) = stack.get(matching_dl_index).inline_component{
+                //             let matching_dl_unconsumed = op_tc - op_used;
+                //             let this_dl_unconsumed = total_count - consumed;
+                //             let is_strong = matching_dl_unconsumed >=2 && this_dl_unconsumed >= 2;
+                //             let mut emph_children: Vec<InlineContent> = vec![];
+                //             let mut node_to_eat = stack.get_next(stack.get(matching_dl_index));
+                //             while node_to_eat.map_or(false, |cn|cn.beginning_char_index < current_beginning_char_index) {
+                //                 emph_children.push(node_to_eat.unwrap().inline_component.to_inline_content(node_to_eat.unwrap().beginning_char_index));
+                //                 node_to_eat = stack.get_next(node_to_eat.unwrap());
+                //             }
+                //             stack.delete_stack_until_node(matching_dl_index, cp_index);
+                //             stack.push_back(stack.get(matching_dl_index).beginning_char_index + op_tc, 
+                //                 CompletedContent(
+                //                     if is_strong {
+                //                         Strong(emph_children)
+                //                     } else {
+                //                         Emph(emph_children)
+                //                     }
+                //                     )
+                //                 );
+                //             let mut used_is_total;
+                //             if let Unds(total, used,..) = &mut stack.get(cp_index).inline_component {
+                //                 *used += if is_strong {2} else {1                                    };
+                //                 used_is_total = *used == *total;
+                //             } else {
+                //                 panic!("expect unds");
+                //             }
+                //                 if used_is_total {
+                //                     stack.remove_at_index(cp_index);
+                //                 }
+                //             if let Unds(total, used,..) = &mut stack.get(matching_dl_index).inline_component {
+                //                 *used += if is_strong {2} else {1};
+                //                 used_is_total = *used == *total;
+                //             }
+                //             if used_is_total {
+                //                     stack.remove_at_index(matching_dl_index);
+                //                     unds_op_stack.remove(unds_op_stack_offset);
+                //                 }
+                //
+                //         } else {
+                //             panic!("should be unds here too")
+                //         }
+                //         continue;
+                //     } else {
+                //         *this_op_bottom = stack.get(cp_index).index_of_prev;
+                //         if pot_op {
+                //             unds_op_stack.push(stack.get(cp_index).index_of_this);
+                //         }
+                //         // we don't need a notion of "deleting" non potential_openers Since
+                //         // we track backwards in a different stack than this.
+                //         current_position = stack.get(cp_index).index_of_next;
+                //     }
+                // } else {
+                //     unds_op_stack.push(current_dllnode.index_of_this);
+                // }
+            }
+            _ =>         current_position = stack.dl_stack[cp_index].index_of_next
+,
         }
     }
-    (out, true, None)
-}
-
-// option usize tells caller where to continue
-fn process_link(start_item_index:usize, fsub: Option<usize>, context: &mut StackProcessContext) -> (Option<usize,Vec<InlineContent,bool>>){
     let mut out = vec![];
-    let current_index = start_item_index;
-    todo!()
+    // now we can iterate through the stack above stack_bottom
+    let mut ntei_op = stack_bottom.map_or(
+        stack.initial_index, 
+        |i| stack.get(i).index_of_next
+        );
+    while let Some(ntei) = ntei_op {
+        let nte = stack.get_mut(ntei);
+        out.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
+        ntei_op = nte.index_of_next;
+    }
+    out
 }
-
-fn process_code_als_html(start_item_index:usize, fsub: Option<usize>, context: &mut StackProcessContext) -> (Vec<InlineContent>, bool, Option<usize>){
-    todo!()
-}
-
