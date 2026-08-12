@@ -1,6 +1,9 @@
-use crate::ast_types::{Block::*, ListType::*};
+use std::collections::HashMap;
 
-pub type Inline = Vec<char>;
+use crate::{
+    ast_types::{Block::*, ListType::*},
+    inline::{Inline, InlineContent, parse_inline, push_html_reserved_char},
+};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Block {
@@ -18,13 +21,7 @@ pub enum Block {
     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
     FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
     /// (characters,is_open, end_condition, )
-    HTMLBlock(Inline, bool, HTMLEndCondition),
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum HTMLEndCondition {
-    ContainsStrings(Vec<Vec<char>>),
-    BlankLine,
+    HTMLBlock(Vec<char>, bool, HTMLEndCondition),
 }
 
 impl Block {
@@ -88,6 +85,20 @@ impl Block {
         match self {
             Document(_) | BlockQuote(..) | List(..) | ListItem(..) => false,
             _ => true,
+        }
+    }
+
+    pub fn parse_inlines(&mut self, lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)>) {
+        match self {
+            Document(blocks) | BlockQuote(blocks, _) | List(blocks, ..) | ListItem(blocks, ..) => {
+                for b in blocks {
+                    b.parse_inlines(lrd_table);
+                }
+            }
+            Heading(il, _) | Paragraph(il, ..) => {
+                il.fill_content(lrd_table);
+            }
+            _ => (),
         }
     }
 
@@ -268,27 +279,23 @@ impl Block {
                 }
                 string_builder.push_str("</li>\n");
             }
-            Heading(items, h) => {
+            Heading(il, h) => {
                 if string_builder.len() > 0 && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 string_builder.push_str(&format!("<h{}>", h));
-                for c in items {
-                    string_builder.push(*c);
-                }
+                il.to_html(string_builder);
                 string_builder.push_str(&format!("</h{}>\n", h));
             }
-            Paragraph(items, _) => {
-                if !in_tight_list && items.len() > 0 {
+            Paragraph(il, _) => {
+                if !in_tight_list && il.chars.len() > 0 {
                     if string_builder.len() > 0 && !string_builder.ends_with('\n') {
                         string_builder.push('\n');
                     }
                     string_builder.push_str("<p>");
                 }
-                for c in items {
-                    string_builder.push(*c);
-                }
-                if !in_tight_list && items.len() > 0 {
+                il.to_html(string_builder);
+                if !in_tight_list && il.chars.len() > 0 {
                     string_builder.push_str("</p>\n");
                 }
             }
@@ -304,7 +311,7 @@ impl Block {
                 }
                 string_builder.push_str("<pre><code>");
                 for c in items {
-                    string_builder.push(*c);
+                    push_html_reserved_char(*c, string_builder);
                 }
                 string_builder.push_str("\n</code></pre>\n");
             }
@@ -316,7 +323,7 @@ impl Block {
                 if lang_hint.len() > 0 {
                     string_builder.push_str(" class=\"language-");
                     for c in lang_hint {
-                        string_builder.push(*c);
+                        push_html_reserved_char(*c, string_builder);
                     }
                     string_builder.push('\"');
                 }
@@ -360,6 +367,12 @@ impl ListType {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum HTMLEndCondition {
+    ContainsStrings(Vec<Vec<char>>),
+    BlankLine,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,7 +403,7 @@ mod tests {
                 )],
                 false,
             ),
-            BlockQuote(vec![Paragraph(vec!['p', 'o'], true)], true),
+            BlockQuote(vec![Paragraph(Inline::new(vec!['p', 'o']), true)], true),
         ]);
         let descension = 1;
         let bq = test_tree.get_block(descension);
@@ -400,7 +413,10 @@ mod tests {
         }
         assert_eq!(
             test_tree.get_block(descension),
-            &mut BlockQuote(vec![Paragraph(vec!['p', 'o'], true), ThematicBreak], true),
+            &mut BlockQuote(
+                vec![Paragraph(Inline::new(vec!['p', 'o']), true), ThematicBreak],
+                true
+            ),
         )
     }
 
@@ -416,11 +432,11 @@ mod tests {
                 )],
                 false,
             ),
-            BlockQuote(vec![Paragraph(vec!['p', 'o'], true)], true),
+            BlockQuote(vec![Paragraph(Inline::new(vec!['p', 'o']), true)], true),
         ]);
         assert_eq!(
             test_tree.get_last_block(),
-            &mut Paragraph(vec!['p', 'o'], true)
+            &mut Paragraph(Inline::new(vec!['p', 'o']), true)
         )
     }
 

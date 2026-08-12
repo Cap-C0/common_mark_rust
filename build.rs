@@ -1,5 +1,6 @@
 use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::fmt::Debug;
@@ -10,6 +11,7 @@ use std::io::BufRead;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::str::Chars;
 use syn::{LitStr, parse_macro_input};
 
 #[derive(Serialize, Deserialize)]
@@ -20,9 +22,42 @@ struct TestCase {
     section: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct CharacterInfo {
+    codepoints: Vec<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TrieNode {
+    children: HashMap<char, TrieNode>,
+    value: Option<Vec<char>>,
+}
+impl TrieNode {
+    pub fn add_str(&mut self, mut string_in: Chars, value: Vec<char>) {
+        let mut current: &mut Self = self;
+        while let Some(nxt_char) = string_in.next() {
+            if current.children.get(&nxt_char).is_none() {
+                let new_trie = TrieNode {
+                    children: HashMap::new(),
+                    value: None,
+                };
+                current.children.insert(nxt_char, new_trie);
+            }
+            current = current.children.get_mut(&nxt_char).unwrap();
+        }
+        current.value = Some(value);
+    }
+
+    pub fn get_child(&self, c: char) -> Option<&Self> {
+        self.children.get(&c)
+    }
+}
+
 fn main() {
-    println!("cargo::rerun-if-changed=spec.json");
     let out_dir = env::var("OUT_DIR").unwrap();
+
+    /* TESTS FROM COMMON MARK */
+    println!("cargo::rerun-if-changed=spec.json");
     let spec_tests_path = Path::new(&out_dir).join("spec_tests.rs");
     let spec_json_path = Path::new("spec.json");
     get_file_if_doesnt_exist(
@@ -63,6 +98,7 @@ fn main() {
         fs::write(spec_tests_path, expanded.to_string()).unwrap();
     }
 
+    /* UNICODE DATA (for punctuations and symbols)*/
     println!("cargo::rerun-if-changed=UnicodeData.txt");
     let unicode_categories_funs_path = Path::new(&out_dir).join("unicode_categories.rs");
     let unicode_data = Path::new("UnicodeData.txt");
@@ -154,6 +190,34 @@ fn main() {
         };
 
         fs::write(unicode_categories_funs_path, quoted_code.to_string()).unwrap();
+    }
+
+    /* ENTITY REFERENCES */
+    println!("cargo::rerun-if-changed=entities.json");
+    let html_entities_funs = Path::new(&out_dir).join("html_entities.rs");
+    let html_entities = Path::new("entities.json");
+    get_file_if_doesnt_exist(&html_entities, "https://html.spec.whatwg.org/entities.json");
+
+    if needs_regen(&html_entities, &html_entities_funs) {
+        let char_maps: HashMap<String, CharacterInfo> =
+            serde_json::from_str(&fs::read_to_string(html_entities).unwrap()).unwrap();
+        // because we are doing a char by char reading, Tries are better than str -> char map. (fail sooner)
+        let mut base_trie = TrieNode {
+            children: HashMap::new(),
+            value: None,
+        };
+        for (string, vec) in char_maps
+            .into_iter()
+            .filter(|(s, _v)| s.contains(';'))
+            .map(|(s, v)| (s, v.codepoints))
+        {
+            base_trie.add_str(
+                string.chars(),
+                vec.into_iter()
+                    .map(|c| char::from_u32(c).unwrap())
+                    .collect(),
+            )
+        }
     }
 }
 

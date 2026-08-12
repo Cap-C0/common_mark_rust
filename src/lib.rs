@@ -42,7 +42,6 @@ pub fn markdown_to_html(markdown: &str) -> String {
             &mut additional_possible_spaces,
             &mut open_block_depth,
         );
-        println!("checked ccs line {}!", line_num);
 
         // now we look for the start of any new structure
         create_new_block_starts(
@@ -67,6 +66,8 @@ pub fn markdown_to_html(markdown: &str) -> String {
         &mut open_par_exists,
         &mut lrd_table,
     );
+
+    document.parse_inlines(&lrd_table);
 
     dbg!(&document);
 
@@ -184,12 +185,13 @@ fn check_continuation_conditions(
             IndentedCodeBlock(_, _) => {
                 let (post_space_char_offset, post_space_eff_col) =
                     consume_effective_indent(line, *char_offset, *effective_column_number);
-                let i = *effective_column_number - post_space_eff_col;
+                let i = post_space_eff_col - *effective_column_number + *additional_possible_spaces;
                 // ie, there are non space chars in the first 4 chars
                 if line.len() > post_space_char_offset && i < 4 {
                     break;
                 }
-                *char_offset = post_space_char_offset;
+                //TODO make this recognize tabs
+                *char_offset += 4;
                 //dont eat blank characters before the first 4 spaces
                 *open_block_depth += 1;
                 break;
@@ -374,7 +376,7 @@ fn list_item_encountered(
     eff_column_number: usize,
     psc: usize,
 ) -> Option<(ListType, Block, usize, usize, usize)> {
-    let c = dbg!(line[char_offset]);
+    let c = line[char_offset];
     if c.is_numeric() {
         let mut number_builder = String::from(line[char_offset]);
         for j in 1..10 {
@@ -556,7 +558,7 @@ fn atx_heading_encountered(line: &Vec<char>, char_offset_after_space: usize) -> 
             .take_while(|c| **c == '#')
             .count();
         if line.len() <= char_offset_after_space + pound_count {
-            return Some(Heading(vec![], pound_count));
+            return Some(Heading(Inline::new(vec![]), pound_count));
         }
         if pound_count <= 6 && " \t".contains(line[char_offset_after_space + pound_count]) {
             // since there is no more structure matching, column number doesnt matter
@@ -616,7 +618,7 @@ fn atx_heading_encountered(line: &Vec<char>, char_offset_after_space: usize) -> 
                 },
             );
 
-            return Some(Heading(inline_text, pound_count));
+            return Some(Heading(Inline::new(inline_text), pound_count));
         }
     }
     None
@@ -874,7 +876,8 @@ fn close_paragraph(
     } //no paragraph to close, job done.
 
     match document.get_last_block() {
-        Paragraph(chars, b @ true) => {
+        Paragraph(il, b @ true) => {
+            let chars = &mut il.chars;
             let mut char_offset = 0;
             let mut chars_eaten = 0;
             'collect_lrds: loop {
@@ -1003,8 +1006,14 @@ mod cp_tests {
     #[test]
     fn test_cp_no_def() {
         test_cp(
-            &mut Document(vec![Paragraph("hello".chars().collect(), true)]),
-            &mut Document(vec![Paragraph("hello".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(
+                Inline::new("hello".chars().collect()),
+                true,
+            )]),
+            &mut Document(vec![Paragraph(
+                Inline::new("hello".chars().collect()),
+                false,
+            )]),
             &mut HashMap::new(),
         )
     }
@@ -1012,8 +1021,11 @@ mod cp_tests {
     #[test]
     fn test_cp_no_title() {
         test_cp(
-            &mut Document(vec![Paragraph("[hello]:link".chars().collect(), true)]),
-            &mut Document(vec![Paragraph("".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(
+                Inline::new("[hello]:link".chars().collect()),
+                true,
+            )]),
+            &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
             &mut HashMap::from([(
                 "hello".chars().collect(),
                 ("link".chars().collect(), "".chars().collect()),
@@ -1025,10 +1037,10 @@ mod cp_tests {
     fn test_cp_title() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[hello]:link (your_mom)".chars().collect(),
+                Inline::new("[hello]:link (your_mom)".chars().collect()),
                 true,
             )]),
-            &mut Document(vec![Paragraph("".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
             &mut HashMap::from([(
                 "hello".chars().collect(),
                 ("link".chars().collect(), "your_mom".chars().collect()),
@@ -1040,10 +1052,10 @@ mod cp_tests {
     fn test_cp_multiline() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\nlink \n(your_mom)".chars().collect(),
+                Inline::new("[\nhel\nlo\n]:\nlink \n(your_mom)".chars().collect()),
                 true,
             )]),
-            &mut Document(vec![Paragraph("".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
             &mut HashMap::from([(
                 "hel lo".chars().collect(),
                 ("link".chars().collect(), "your_mom".chars().collect()),
@@ -1054,10 +1066,13 @@ mod cp_tests {
     fn test_cp_title_fail() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\nlink    \n(your_mom".chars().collect(),
+                Inline::new("[\nhel\nlo\n]:\nlink    \n(your_mom".chars().collect()),
                 true,
             )]),
-            &mut Document(vec![Paragraph("(your_mom".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(
+                Inline::new("(your_mom".chars().collect()),
+                false,
+            )]),
             &mut HashMap::from([(
                 "hel lo".chars().collect(),
                 ("link".chars().collect(), "".chars().collect()),
@@ -1069,11 +1084,11 @@ mod cp_tests {
     fn test_cp_link_fail_1() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect(),
+                Inline::new("[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect()),
                 true,
             )]),
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect(),
+                Inline::new("[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect()),
                 false,
             )]),
             &mut HashMap::from([]),
@@ -1083,11 +1098,11 @@ mod cp_tests {
     fn test_cp_link_fail_2() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect(),
+                Inline::new("[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect()),
                 true,
             )]),
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect(),
+                Inline::new("[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect()),
                 false,
             )]),
             &mut HashMap::from([]),
@@ -1097,12 +1112,17 @@ mod cp_tests {
     fn test_cp_more_paragraph() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\nlink    \n'your_mom'\nand theres more"
-                    .chars()
-                    .collect(),
+                Inline::new(
+                    "[\nhel\nlo\n]:\nlink    \n'your_mom'\nand theres more"
+                        .chars()
+                        .collect(),
+                ),
                 true,
             )]),
-            &mut Document(vec![Paragraph("and theres more".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(
+                Inline::new("and theres more".chars().collect()),
+                false,
+            )]),
             &mut HashMap::from([(
                 "hel lo".chars().collect(),
                 ("link".chars().collect(), "your_mom".chars().collect()),
@@ -1113,12 +1133,14 @@ mod cp_tests {
     fn test_cp_2_def() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[def2]:link2 \"desc_2\""
-                    .chars()
-                    .collect(),
+                Inline::new(
+                    "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[def2]:link2 \"desc_2\""
+                        .chars()
+                        .collect(),
+                ),
                 true,
             )]),
-            &mut Document(vec![Paragraph("".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
             &mut HashMap::from([
                 (
                     "hel lo".chars().collect(),
@@ -1135,12 +1157,14 @@ mod cp_tests {
     fn test_cp_2_def_override() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-                    .chars()
-                    .collect(),
+                Inline::new(
+                    "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
+                        .chars()
+                        .collect(),
+                ),
                 true,
             )]),
-            &mut Document(vec![Paragraph("".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
             &mut HashMap::from([(
                 "hel lo".chars().collect(),
                 ("link".chars().collect(), "your_mom".chars().collect()),
@@ -1151,15 +1175,19 @@ mod cp_tests {
     fn test_cp_fails() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-                    .chars()
-                    .collect(),
+                Inline::new(
+                    "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
+                        .chars()
+                        .collect(),
+                ),
                 true,
             )]),
             &mut Document(vec![Paragraph(
-                "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-                    .chars()
-                    .collect(),
+                Inline::new(
+                    "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
+                        .chars()
+                        .collect(),
+                ),
                 false,
             )]),
             &mut HashMap::from([]),
@@ -1169,12 +1197,14 @@ mod cp_tests {
     fn test_cp_2_escapes() {
         test_cp(
             &mut Document(vec![Paragraph(
-                "[\nh\\el\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-                    .chars()
-                    .collect(),
+                Inline::new(
+                    "[\nh\\el\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
+                        .chars()
+                        .collect(),
+                ),
                 true,
             )]),
-            &mut Document(vec![Paragraph("".chars().collect(), false)]),
+            &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
             &mut HashMap::from([
                 (
                     "h\\el lo".chars().collect(),
@@ -1334,10 +1364,10 @@ fn create_new_block_starts(
                     match document.get_block(*obd) {
                         Paragraph(inline, _) => {
                             //parsing tags can "empty" the paragraph
-                            if inline.is_empty() {
+                            if inline.chars.is_empty() {
                                 break 'setext_check;
                             }
-                            mem::swap(&mut h_text, inline)
+                            mem::swap(&mut h_text, &mut inline.chars)
                         }
                         _ => panic!(),
                     };
@@ -1348,7 +1378,7 @@ fn create_new_block_starts(
                     BlockQuote(blocks, _) |
                     // List(blocks, _, list_type) => the only children of a list are list_blocks
                     ListItem(blocks,_, _) => {
-                        *blocks.last_mut().unwrap() = Heading(h_text, if c == '=' {1} else {2});
+                        *blocks.last_mut().unwrap() = Heading(Inline::new(h_text), if c == '=' {1} else {2});
                     }
                     _ => panic!("should be unreachable!"),
                 }
@@ -1545,7 +1575,9 @@ fn create_new_block_starts(
                 _ => unreachable!(),
             }
         }
-        if let Some(fcb) = fenced_code_block_encountered(line, *char_offset, pre_space_count) {
+        if let Some(fcb) =
+            fenced_code_block_encountered(line, char_offset_after_spaces, pre_space_count)
+        {
             close_paragraph(
                 document,
                 &mut open_par_above,
@@ -1611,8 +1643,8 @@ fn create_new_block_starts(
     //now check if theres a paragraph we can continue lazily
     match document.get_last_block() {
         Paragraph(inline, true) => {
-            inline.push('\n');
-            inline.append(
+            inline.chars.push('\n');
+            inline.chars.append(
                 &mut line[char_offset_after_spaces..]
                     .iter()
                     .map(|c| *c)
@@ -1662,11 +1694,13 @@ fn create_new_block_starts(
     match document.get_general_container(*obd).0 {
         Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
             blocks.push(Paragraph(
-                line[*char_offset..]
-                    .iter()
-                    .skip_while(|c| **c == ' ')
-                    .map(|c| *c)
-                    .collect(),
+                Inline::new(
+                    line[*char_offset..]
+                        .iter()
+                        .skip_while(|c| **c == ' ')
+                        .map(|c| *c)
+                        .collect(),
+                ),
                 true,
             ));
             *char_offset = line.len();
@@ -1713,11 +1747,14 @@ mod cnbs_tests {
     fn test_cnbs_1() {
         test_cnbs(
             &mut Document(vec![BlockQuote(
-                vec![Paragraph(vec!['a', 'b'], true)],
+                vec![Paragraph(Inline::new(vec!['a', 'b']), true)],
                 true,
             )]),
             ">-",
-            &mut Document(vec![BlockQuote(vec![Heading(vec!['a', 'b'], 2)], true)]),
+            &mut Document(vec![BlockQuote(
+                vec![Heading(Inline::new(vec!['a', 'b']), 2)],
+                true,
+            )]),
             1,
         );
     }
@@ -1725,9 +1762,9 @@ mod cnbs_tests {
     #[test]
     fn test_cnbs_2() {
         test_cnbs(
-            &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+            &mut Document(vec![Paragraph(Inline::new(vec!['a', 'b']), true)]),
             "-",
-            &mut Document(vec![Heading(vec!['a', 'b'], 2)]),
+            &mut Document(vec![Heading(Inline::new(vec!['a', 'b']), 2)]),
             0,
         );
     }
@@ -1735,9 +1772,9 @@ mod cnbs_tests {
     #[test]
     fn test_cnbs_3() {
         test_cnbs(
-            &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+            &mut Document(vec![Paragraph(Inline::new(vec!['a', 'b']), true)]),
             "=          ",
-            &mut Document(vec![Heading(vec!['a', 'b'], 1)]),
+            &mut Document(vec![Heading(Inline::new(vec!['a', 'b']), 1)]),
             10,
         );
     }
@@ -1745,10 +1782,10 @@ mod cnbs_tests {
     #[test]
     fn test_cnbs_4() {
         test_cnbs(
-            &mut Document(vec![Paragraph(vec!['a', 'b'], true)]),
+            &mut Document(vec![Paragraph(Inline::new(vec!['a', 'b']), true)]),
             "- -",
             &mut Document(vec![
-                Paragraph(vec!['a', 'b'], false),
+                Paragraph(Inline::new(vec!['a', 'b']), false),
                 List(
                     vec![ListItem(
                         vec![List(
@@ -1773,12 +1810,12 @@ mod cnbs_tests {
     fn test_cnbs_5() {
         test_cnbs(
             &mut Document(vec![BlockQuote(
-                vec![Paragraph(vec!['a', 'b'], true)],
+                vec![Paragraph(Inline::new(vec!['a', 'b']), true)],
                 false,
             )]),
             ">-",
             &mut Document(vec![
-                BlockQuote(vec![Paragraph(vec!['a', 'b'], false)], false),
+                BlockQuote(vec![Paragraph(Inline::new(vec!['a', 'b']), false)], false),
                 BlockQuote(
                     vec![List(
                         vec![ListItem(vec![], true, 2)],
@@ -1797,11 +1834,14 @@ mod cnbs_tests {
     fn test_cnbs_6() {
         test_cnbs(
             &mut Document(vec![BlockQuote(
-                vec![Paragraph(vec!['a', 'b'], true)],
+                vec![Paragraph(Inline::new(vec!['a', 'b']), true)],
                 true,
             )]),
             ">---",
-            &mut Document(vec![BlockQuote(vec![Heading(vec!['a', 'b'], 2)], true)]),
+            &mut Document(vec![BlockQuote(
+                vec![Heading(Inline::new(vec!['a', 'b']), 2)],
+                true,
+            )]),
             3,
         );
     }
@@ -1810,12 +1850,12 @@ mod cnbs_tests {
     fn test_cnbs_7() {
         test_cnbs(
             &mut Document(vec![BlockQuote(
-                vec![Paragraph(vec!['a', 'b'], true)],
+                vec![Paragraph(Inline::new(vec!['a', 'b']), true)],
                 true,
             )]),
             ">***",
             &mut Document(vec![BlockQuote(
-                vec![Paragraph(vec!['a', 'b'], false), ThematicBreak],
+                vec![Paragraph(Inline::new(vec!['a', 'b']), false), ThematicBreak],
                 true,
             )]),
             3,
@@ -1970,7 +2010,7 @@ mod cnbs_tests {
         test_cnbs(
             &mut Document(vec![]),
             "#",
-            &mut Document(vec![Heading(vec![], 1)]),
+            &mut Document(vec![Heading(Inline::new(vec![]), 1)]),
             1,
         );
     }
@@ -1980,7 +2020,7 @@ mod cnbs_tests {
         test_cnbs(
             &mut Document(vec![]),
             "  #           #       ",
-            &mut Document(vec![Heading(vec![], 1)]),
+            &mut Document(vec![Heading(Inline::new(vec![]), 1)]),
             22,
         );
     }
@@ -1990,7 +2030,10 @@ mod cnbs_tests {
         test_cnbs(
             &mut Document(vec![]),
             "  #           #       hello # ",
-            &mut Document(vec![Heading("#       hello".chars().collect(), 1)]),
+            &mut Document(vec![Heading(
+                Inline::new("#       hello".chars().collect()),
+                1,
+            )]),
             30,
         );
     }

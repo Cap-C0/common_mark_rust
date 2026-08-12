@@ -1,4 +1,3 @@
-use crate::{Inline, inline};
 use crate::inline::InlineTextComponent::*;
 use crate::inline::{InlineContent::*};
 use core::panic;
@@ -7,6 +6,33 @@ use std::collections::{HashMap, VecDeque};
 use std::{mem, vec};
 
 include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
+
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
+pub struct Inline {
+    pub chars: Vec<char>,
+    pub content: Vec<InlineContent>,
+}
+
+impl Inline {
+    pub fn new(chars: Vec<char>) -> Self {
+        Inline{
+            chars: chars,
+            content: vec![],
+        }
+    }
+
+    pub fn fill_content(&mut self, lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)>) {
+        dbg!("called_fill_content");
+        assert!(self.content.is_empty());
+        self.content = parse_inline(&self.chars, lrd_table)
+    }
+
+    pub fn to_html(&self, string_builder: &mut String) {
+        for ic in &self.content {
+            ic.to_html(&self.chars, string_builder);
+        }
+    }
+}
 
 // we do not need to enforce multiple new line requirements in these parsers as that will be enforced
 // by paragraphs ending at new lines
@@ -26,6 +52,87 @@ pub enum InlineContent {
     // for use when swapping memory
     Dummy, 
 }
+
+impl InlineContent {
+    pub fn to_html(&self, characters: &[char], string_builder: &mut String) {
+        match self {
+            Softbreak => string_builder.push_str("\n"),
+            Hardbreak => string_builder.push_str("<br />\n"),
+            Text(start, end) => {
+                let mut char_index = *start;
+                while char_index < *end {
+                    //TODO: escapes and entity and numeric references.
+                    if characters[char_index] == '&' {
+                        let amp_index = char_index;
+                        let matched_entity = None;
+                        if char_index + 1 < *end && characters[char_index + 1] == '#' {
+                            char_index += 1;
+                            if char_index + 1 < *end && "Xx".contains(characters[char_index + 1]) {
+                                //hexadecimal
+                            } else {
+
+                            }
+                            //do the decimal thing
+                            // 1-7 digits or
+                        } else {
+                            //  do the entity html entity reference
+                        }
+                        if matched_entity.is_some() {
+                            push_html_reserved_char(matched_entity.unwrap(), string_builder);
+                            char_index +=1;
+                        } else {
+                            for i in amp_index..char_index {
+                                push_html_reserved_char(characters[i], string_builder);
+                            }
+                            char_index+=1;
+                        }
+                    } else {
+                        push_html_reserved_char(characters[char_index], string_builder);
+                        char_index+=1;
+                    }
+                }
+            },
+            Emph(inline_contents) => {
+                string_builder.push_str("<em>");
+                for ic in inline_contents {
+                    ic.to_html(characters, string_builder);
+                }
+                string_builder.push_str("</em>");
+            },
+            Strong(inline_contents) => {
+                                string_builder.push_str("<strong>");
+                for ic in inline_contents {
+                    ic.to_html(characters, string_builder);
+                }
+                string_builder.push_str("</strong>");
+
+            }
+            Link(_, _, inline_contents) => todo!(),
+            Image(_, _, inline_contents) => todo!(),
+            Code((start, end)) => {
+                string_builder.push_str("<code>");
+                for i in *start..*end {
+                    string_builder.push(characters[i]);
+                }
+                string_builder.push_str("</code>");
+            },
+            Dummy => todo!(),
+        }
+    }
+}
+
+pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
+        let x = match c {
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '&' => "&amp;",
+            '"' => "&quot;",
+            '\'' => "&apos;",
+            _ => &c.to_string()
+        };
+    string_builder.push_str(x);
+}
+
 /*
  * returns Some(k) if text matches [.*(c| c != " \t\n")*.*]
  * to get the link label, from the return value, get text[1..k-1]*/
@@ -220,6 +327,7 @@ impl InlineTextComponent {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct DLLnode {
     beginning_char_index: usize,
     inline_component: InlineTextComponent,
@@ -242,6 +350,7 @@ impl DLLnode {
 
 // we will be approxiamating a double linked list in rust by having each item in the list keep
 // track of the index of the next item.
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct FakeDelimiterDLL {
     // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
     dl_stack: Vec<DLLnode>,
@@ -360,14 +469,15 @@ impl FakeDelimiterDLL {
 //this means we create a call stack where our FIRST call is to emphasis,
 //and then encountering a "tighter" binding opener makes us call that. st the
 //"tighter" binding parser returns first!
-pub fn parse_inline(inline: &Inline, lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)> ) -> Vec<InlineContent> {
+pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)> ) -> Vec<InlineContent> {
     // pointer, _, offset_to_next, offset_to_prev
+    dbg!("called parse inline!");
     let mut delimit_stack = FakeDelimiterDLL{
         dl_stack: vec![],
         initial_index: None,
         final_index: None
     };
-    let mut char_iter = inline.iter().enumerate().peekable();
+    let mut char_iter = chars.iter().enumerate().peekable();
     let mut text_begin = 0;
 
     let mut add_text_to_stack = |sicl: &mut FakeDelimiterDLL, text_begin:usize, text_end: usize| {
@@ -422,25 +532,25 @@ pub fn parse_inline(inline: &Inline, lrd_table: &HashMap<Vec<char>, (Vec<char>, 
                     dc += 1;
                     char_iter.next();
                 }
-                let punc_preceded = char_index > 0 && inline[char_index - 1].is_unicode_punctuation();
-                let punc_followed = char_index + dc < inline.len() && inline[char_index  + dc].is_unicode_punctuation();
-                let is_left_flanking: bool = char_index + dc <= inline.len() &&    //not_whitespace_followed
-                    !(inline[char_index + dc].is_whitespace()) &&
+                let punc_preceded = char_index > 0 && chars[char_index - 1].is_unicode_punctuation();
+                let punc_followed = char_index + dc < chars.len() && chars[char_index  + dc].is_unicode_punctuation();
+                let is_left_flanking: bool = char_index + dc < chars.len() &&    //not_whitespace_followed
+                    !(chars[char_index + dc].is_whitespace()) &&
                     (
                         !punc_followed ||
                         (punc_followed &&
                             (char_index <= 0 || 
-                            inline[char_index - 1].is_whitespace() || 
+                            chars[char_index - 1].is_whitespace() || 
                             punc_preceded)
                         )
                     ); // or followed by punc and preceded by ws or punc
                 let is_right_flanking: bool = char_index > 0 &&// not_whitespace_preceded
-                    !(inline[char_index - 1].is_whitespace()) &&
+                    !(chars[char_index - 1].is_whitespace()) &&
                     (
                         !punc_preceded ||
                         (punc_preceded && 
-                            (char_index + dc >= inline.len() ||
-                            inline[char_index + dc].is_whitespace() ||
+                            (char_index + dc >= chars.len() ||
+                            chars[char_index + dc].is_whitespace() ||
                             punc_followed)
                         )
                     );
@@ -490,19 +600,12 @@ pub fn parse_inline(inline: &Inline, lrd_table: &HashMap<Vec<char>, (Vec<char>, 
         }
 
     }
+    add_text_to_stack(&mut delimit_stack, text_begin, chars.len());
 
-    // fsub: forward search upper bound
-    // deepest nested link has priority, boolean returns if a link was found.
-
+    dbg!(&delimit_stack);
     // now at end of line we look through our stacks
     process_emphasis(None, &mut delimit_stack)
 }
-
-struct StackProcessContext<'a, 'b> {
-    stack: &'a mut FakeDelimiterDLL,
-    lrd_table: &'b HashMap<Vec<char>, (Vec<char>, Vec<char>)>,
-}
-
 
 // line beginning spaces are taken in ast_construction phase.
 // fn process_text(start_char_offset: usize, end_char_offset: usize, chars: &[char]) -> Vec<InlineContent> {
@@ -564,7 +667,8 @@ struct StackProcessContext<'a, 'b> {
 // fsub: forward search upper bound
 // boolean tells caller if it contains a link, deepest nested link has priority
 fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) -> Vec<InlineContent>{
-    let mut current_position = stack_bottom.map_or(stack.initial_index, 
+    dbg!("processing emph");
+    let mut current_index_op = stack_bottom.map_or(stack.initial_index, 
         |i|{
             stack.get(i).index_of_next
         });
@@ -580,17 +684,15 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
     let mut unds_op_stack:Vec<usize > = vec![];
     let mut asts_op_stack: Vec<usize > = vec![];
 
-
-    //the one that opens later takes precedence
-    while let Some(cp_index) = current_position {
-        let current_dllnode = stack.get(cp_index);
+    while let Some(current_index) = current_index_op {
+        let current_dllnode = stack.get(current_index);
         let current_beginning_char_index = current_dllnode.beginning_char_index;
         match current_dllnode.inline_component {
             Asts(total_count, consumed, pot_op, pot_clos) => {
                 let stack_bottom_this_type = if pot_op {openers_bottom_asts_not_opening[total_count % 3] } else {
                     openers_bottom_asts_and_opening[total_count % 3]
                 };
-                if pot_clos {
+                if pot_clos && !asts_op_stack.is_empty(){
                     let mut asts_op_stack_offset = asts_op_stack.len() - 1;
                     let this_op_bottom = &mut
                         if pot_op {
@@ -627,7 +729,7 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                             emph_children.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
                             node_to_eat_index_op = nte.index_of_next;
                         }
-                        stack.delete_stack_until_node(matching_dl_index, cp_index);
+                        stack.delete_stack_until_node(matching_dl_index, current_index);
                         stack.push_back(stack.get(matching_dl_index).beginning_char_index + op_tc, 
                             CompletedContent(
                                 if is_strong {
@@ -638,14 +740,14 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                                 )
                             );
                         let mut used_is_total;
-                        if let Asts(total, used,..) = &mut stack.get_mut(cp_index).inline_component {
+                        if let Asts(total, used,..) = &mut stack.get_mut(current_index).inline_component {
                             *used += if is_strong {2} else {1                                    };
                             used_is_total = *used == *total;
                         } else {
                             panic!("expect unds");
                         }
                             if used_is_total {
-                                stack.remove_at_index(cp_index);
+                                stack.remove_at_index(current_index);
                             }
                         if let Asts(total, used,..) = &mut stack.get_mut(matching_dl_index).inline_component {
                             *used += if is_strong {2} else {1};
@@ -657,16 +759,19 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                             }
                         continue;
                     } else {
-                        *this_op_bottom = stack.get(cp_index).index_of_prev;
+                        *this_op_bottom = stack.get(current_index).index_of_prev;
                         if pot_op {
-                            unds_op_stack.push(stack.get(cp_index).index_of_this);
+                            unds_op_stack.push(stack.get(current_index).index_of_this);
                         }
                         // we don't need a notion of "deleting" non potential_openers Since
                         // we track backwards in a different stack than this.
-                        current_position = stack.get(cp_index).index_of_next;
+                        current_index_op = stack.get(current_index).index_of_next;
                     }
+                } else if pot_op {
+                    asts_op_stack.push(current_index);
+                    current_index_op = stack.get(current_index).index_of_next;
                 } else {
-                    asts_op_stack.push(cp_index);
+                    current_index_op = stack.get(current_index).index_of_next;
                 }
             }
             Unds(total_count,consumed, pot_op, pot_clos) => {
@@ -753,10 +858,11 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                 //     unds_op_stack.push(current_dllnode.index_of_this);
                 // }
             }
-            _ =>         current_position = stack.dl_stack[cp_index].index_of_next
+            _ =>         current_index_op = stack.dl_stack[current_index].index_of_next
 ,
         }
     }
+
     let mut out = vec![];
     // now we can iterate through the stack above stack_bottom
     let mut ntei_op = stack_bottom.map_or(
