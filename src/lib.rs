@@ -70,7 +70,7 @@ pub fn markdown_to_html(markdown: &str) -> String {
 
     document.parse_inlines(&lrd_table);
 
-    dbg!(&document);
+    // dbg!(&document);
     // dbg!(&document);
 
     document.to_html()
@@ -1523,9 +1523,12 @@ fn create_new_block_starts(
             //TODO: make empty lists not interrupt either
             if open_par_above {
                 match lt {
-                    OrderedList(_, 1) => (),
+                    OrderedList(_, 1) | UnorderedList(_) => {
+                        if is_blank_line(line, new_char_offset) {
+                            break;
+                        }
+                    }
                     OrderedList(_, _) => break,
-                    _ => (),
                 }
             } // only ordered lists starting with 1 can interrupt paragraphs
             close_paragraph(

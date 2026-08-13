@@ -35,29 +35,10 @@ pub enum TextType<'a> {
     InfoString,
 }
 
-pub fn push_chars_with_entities_and_bs(
-    chars: &[char],
-    string_builder: &mut String,
-    type_of_text: &mut TextType,
-) {
+pub fn push_chars_with_entities_and_bs(chars: &[char], string_builder: &mut String) {
     let mut char_index = 0;
     while char_index < chars.len() {
-        //TODO: escapes and entity and numeric references.
-        if chars[char_index] == '\\' {
-            if char_index + 1 >= chars.len() {
-                match type_of_text {
-                    TextType::Paragraph(ends_w_backslash) => **ends_w_backslash = false,
-                    TextType::InfoString => push_html_reserved_char('\\', string_builder),
-                }
-                char_index += 1
-            } else {
-                if !chars[char_index + 1].is_ascii_punctuation() {
-                    push_html_reserved_char('\\', string_builder);
-                }
-                push_html_reserved_char(chars[char_index + 1], string_builder);
-                char_index += 2;
-            }
-        } else if chars[char_index] == '&' {
+        if chars[char_index] == '&' {
             enum ResultChar<'a> {
                 Single(char),
                 Array(&'a [char]),

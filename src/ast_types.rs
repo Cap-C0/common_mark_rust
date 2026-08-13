@@ -299,7 +299,6 @@ impl Block {
                 if !in_tight_list && il.chars.len() > 0 {
                     string_builder.push_str("</p>\n");
                 }
-                dbg!(&string_builder);
             }
             ThematicBreak => {
                 if string_builder.len() > 0 && !string_builder.ends_with('\n') {

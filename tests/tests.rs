@@ -19,7 +19,7 @@ fn my_test_simple() {
 }
 
 #[test]
-fn my_test_simple() {
+fn my_test_tick() {
     assert_eq!(markdown_to_html("\\`"), "<p>`</p>\n");
 }
 

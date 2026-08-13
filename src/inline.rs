@@ -83,9 +83,25 @@ impl InlineContent {
             Link(_, _, inline_contents) => todo!(),
             Image(_, _, inline_contents) => todo!(),
             Code((start, end)) => {
+                let mut strip_space = false;
+                dbg!(characters);
+                let strip_space = " \n".contains(dbg!(characters[dbg!(*start)])) && " \n".contains(dbg!(characters[dbg!(*end - 1)])); 
+                dbg!(&strip_space); 
+                let mut entirely_space = true;
                 string_builder.push_str("<code>");
-                for i in *start..*end {
-                    string_builder.push(characters[i]);
+                let strip_start = if strip_space {*start + 1} else {*start};
+                let strip_end = if strip_space {*end - 1} else {*end};
+                for i in strip_start..strip_end{
+                    if " \n".contains(characters[i]) {
+                        push_html_reserved_char(' ', string_builder);
+                    } else {
+                        entirely_space = false;
+                        push_html_reserved_char(characters[i], string_builder);
+                    }
+                }
+                if entirely_space && strip_space {
+                    push_html_reserved_char(' ', string_builder);
+                    push_html_reserved_char(' ', string_builder);
                 }
                 string_builder.push_str("</code>");
             },
@@ -322,11 +338,13 @@ struct FakeDelimiterDLL {
     final_index: Option<usize>,
 }
 
+
+
 impl FakeDelimiterDLL {
     fn push_back(&mut self,begin_index:usize,dl: InlineTextComponent) {
         if self.initial_index.is_none() {
-            self.initial_index = Some(0);
-            self.final_index = Some(0);
+            self.initial_index = Some(self.dl_stack.len());
+            self.final_index = Some(self.dl_stack.len());
             self.dl_stack.push(DLLnode::new(begin_index, dl, None, None, self.dl_stack.len()));
         } else {
              self.dl_stack.push(DLLnode::new(begin_index, dl, self.final_index, None, self.dl_stack.len()));
@@ -381,6 +399,20 @@ impl FakeDelimiterDLL {
         self.dl_stack[top_node_index].index_of_prev = Some(bottom_node_index);
     }
 
+    fn replace_inside_stack_range(&mut self, bottom_node_index: usize, top_node_index: usize, begin_char_index:usize,
+        item: InlineTextComponent) {
+        self.dl_stack.push(DLLnode{
+            beginning_char_index: begin_char_index,
+            inline_component: item,
+            index_of_prev : Some(bottom_node_index),
+            index_of_next : Some(top_node_index),
+            index_of_this : self.dl_stack.len(),
+        });
+        self.dl_stack[bottom_node_index].index_of_next = Some(self.dl_stack.len() - 1);
+        self.dl_stack[top_node_index].index_of_prev = Some(self.dl_stack.len() - 1);
+
+    }
+
     fn delete_stack_above_including(&mut self, node_index: usize) {
         let prev_node_op = self.dl_stack[node_index].index_of_prev.map(|i| &mut self.dl_stack[i]);
         if let Some(prev_node) = prev_node_op {
@@ -415,6 +447,28 @@ impl FakeDelimiterDLL {
         }
     }
 
+    pub fn iter(&self) -> FakeDLLIter {
+        FakeDLLIter{index: self.initial_index, collection: self}
+    }
+}
+
+struct FakeDLLIter<'a> {
+    index: Option<usize>,
+    collection: &'a FakeDelimiterDLL,
+}
+
+
+impl<'a> Iterator for FakeDLLIter<'a> {
+    type Item = &'a DLLnode;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index.is_some(){
+            let out = self.collection.get(self.index.unwrap());
+            self.index = out.index_of_next;
+            return Some(out);
+        }
+        None
+    }
 }
 
 
@@ -447,21 +501,79 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
             sicl.push_back(text_begin, InlineTextComponent::TextualContent(text_end - text_begin));
         }
     };
+    let mut space_count = 0;
     //do the function!
     while let Some((char_index, &c)) = char_iter.next() {
         match c {
+            ' ' => space_count += 1,
+            '\n' => {
+                add_text_to_stack(&mut delimit_stack, text_begin, char_index - space_count);
+                if space_count >= 2 {
+                    delimit_stack.push_back(char_index, InlineTextComponent::CompletedContent(Hardbreak));
+                } else {
+                    delimit_stack.push_back(char_index, InlineTextComponent::CompletedContent(Softbreak));
+                }
+                space_count = 0;
+                text_begin = char_index + 1;
+            }
+            _ => space_count = 0,
+            
+        }
+        match c {
+
             '\\' => {
-                if let Some((next_char_index, &'`')) = char_iter.peek() {
+                if let Some((_, '`')) = char_iter.peek() {
+                    dbg!("seen a backtick!");
+                    add_text_to_stack(&mut delimit_stack,text_begin, char_index);
+                    char_iter.next();
                     // see if that form a codespan.
                     let mut tick_count = 1;
                     while char_iter.peek().map_or(false, |&(_, &c)| c == '`') {
                         tick_count += 1;
                         char_iter.next();
                     }
-
+                    // then look from beginning of stack for a matching tick_count
+                    let mut next_node = delimit_stack.get_first();
+                    while let Some(dllnode) = next_node {
+                        if let BackTick(x) = dllnode.inline_component {
+                            if x == tick_count {
+                                break;
+                            }
+                        }
+                        next_node = delimit_stack.get_next(dllnode);
+                    }
+                    if let Some(matching_node) = next_node {
+                        let starting_char_index = matching_node.beginning_char_index;
+                        let index_of_matching = matching_node.index_of_this;
+                        delimit_stack.delete_stack_above_including(index_of_matching);
+                        delimit_stack.push_back(starting_char_index, CompletedContent(
+                                Code((starting_char_index + tick_count, char_index + 1)) //include
+                                                                                         //the
+                                                                                         //backslash!
+                                ));
+                    } else {
+                        // add just the tick as an escaped char.
+                        delimit_stack.push_back(char_index + 1, InlineTextComponent::TextualContent(1));
+                        // and add the delimit_stack with -1 starting_char
+                        if tick_count > 1 {
+                            delimit_stack.push_back(char_index + 2, BackTick(tick_count - 1));
+                        }
+                    }
+                    text_begin = char_index + 1 + tick_count;
                     // otherwise its an espaped backtick.
-                }
-                if char_iter.peek().map_or(false, |&(_,&d)| d != '`'){
+                } else if let Some((_,'\n')) = char_iter.peek() {
+                        //create a Hardbreak
+                        add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                        delimit_stack.push_back(char_index + 1, InlineTextComponent::CompletedContent(Hardbreak));
+                        text_begin = char_index + 2;
+                        char_iter.next();
+                }else                 if let Some((_, c)) = char_iter.peek(){
+                    if c.is_ascii_punctuation() {
+                        add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                        //exclude the backslash, include just the punctuation
+                        delimit_stack.push_back(char_index + 1, InlineTextComponent::TextualContent(1));
+                        text_begin = char_index + 2;
+                    }
                     char_iter.next();
                 }
             },
@@ -485,6 +597,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 if let Some(matching_node) = next_node {
                     let starting_char_index = matching_node.beginning_char_index;
                     let index_of_matching = matching_node.index_of_this;
+                    dbg!( index_of_matching);
                     delimit_stack.delete_stack_above_including(index_of_matching);
                     delimit_stack.push_back(starting_char_index, CompletedContent(
                             Code((starting_char_index + tick_count, char_index))
@@ -503,8 +616,8 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                     dc += 1;
                     char_iter.next();
                 }
-                let punc_preceded = char_index > 0 && chars[char_index - 1].is_unicode_punctuation();
-                let punc_followed = char_index + dc < chars.len() && chars[char_index  + dc].is_unicode_punctuation();
+                let punc_preceded = char_index > 0 && (chars[char_index - 1].is_unicode_punctuation() || chars[char_index - 1].is_unicode_symbol());
+                let punc_followed = char_index + dc < chars.len() && (chars[char_index  + dc].is_unicode_punctuation() || chars[char_index  + dc].is_unicode_symbol());
                 let is_left_flanking: bool = char_index + dc < chars.len() &&    //not_whitespace_followed
                     !(chars[char_index + dc].is_whitespace()) &&
                     (
@@ -528,7 +641,20 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 delimit_stack.push_back(char_index, 
                     match c {
                         '*' => {Asts(dc,0, is_left_flanking,is_right_flanking)}
-                        '_' => {Unds(dc,0, is_left_flanking,is_right_flanking)},
+                        '_' => {Unds(dc,0, 
+                            is_left_flanking && 
+                            (
+                                !is_right_flanking
+                                ||
+                                (is_right_flanking && punc_preceded)
+                            )
+                            ,is_right_flanking &&
+                            (
+                                !is_left_flanking
+                                ||
+                                (is_left_flanking && punc_followed)
+                            )
+                            )},
                         _ => panic!()
                     }
                 );
@@ -551,12 +677,18 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                 delimit_stack.push_back(char_index, BrackClose);
                 text_begin = char_index + 1;
-                todo!();
+                //todo!();
             },
             '<' => {
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                 delimit_stack.push_back(char_index, AngleOpen);
                 text_begin = char_index + 1;
+            },
+            '>' => {
+                add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                delimit_stack.push_back(char_index, AngleClose);
+                text_begin = char_index + 1;
+                //todo!()
             }
             _ => {
                 let _ = match c {
@@ -573,6 +705,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     }
     add_text_to_stack(&mut delimit_stack, text_begin, chars.len());
 
+    dbg!(&delimit_stack);
     // dbg!(&delimit_stack);
     // now at end of line we look through our stacks
     process_emphasis(None, &mut delimit_stack)
@@ -643,28 +776,29 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
         |i|{
             stack.get(i).index_of_next
         });
-    // because of how the dll is implemented, if a and b are actual pointers to dllnodes (indexes), 
-    // then a < b implies a is earlier in the stack than b and its delimiter is earlier in the line
-
+    let stack_bottom_char_index = stack_bottom.map(
+        |dll_pointer| {
+            stack.get(dll_pointer).beginning_char_index
+        }
+        );
     // only set op_bot when we find a non_matched closer_delimiter
-    let mut openers_bottom_asts_and_opening: [Option<usize >;3] = [stack_bottom;3];
-    let mut openers_bottom_asts_not_opening: [Option<usize >;3] = [stack_bottom;3];
-    let mut openers_bottom_unds_and_opening: [Option<usize >;3] = [stack_bottom;3];
-    let mut openers_bottom_unds_not_opening: [Option<usize >;3] = [stack_bottom;3];
-    // index_in_fakedldll, char_offset
-    let mut unds_op_stack:Vec<usize > = vec![];
-    let mut asts_op_stack: Vec<usize > = vec![];
+    // set it as the *CHARACTER_OFFSET* in the corresponding vec of chars.
+    let mut openers_bottom_asts_and_opening: [Option<usize >;3] = [stack_bottom_char_index;3];
+    let mut openers_bottom_asts_not_opening: [Option<usize >;3] = [stack_bottom_char_index;3];
+    let mut openers_bottom_unds_and_opening: [Option<usize >;3] = [stack_bottom_char_index;3];
+    let mut openers_bottom_unds_not_opening: [Option<usize >;3] = [stack_bottom_char_index;3];
+    // index_in_fakedldll, char_offset it points to
+    let mut unds_op_stack:Vec<(usize,usize) > = vec![];
+    let mut asts_op_stack: Vec<(usize,usize)> = vec![];
 
     while let Some(current_index) = current_index_op {
         let current_dllnode = stack.get(current_index);
         let current_beginning_char_index = current_dllnode.beginning_char_index;
         match current_dllnode.inline_component {
             Asts(total_count, consumed, pot_op, pot_clos) => {
-                let stack_bottom_this_type = if pot_op {openers_bottom_asts_not_opening[total_count % 3] } else {
-                    openers_bottom_asts_and_opening[total_count % 3]
-                };
+                dbg!(&asts_op_stack);
                 if pot_clos && !asts_op_stack.is_empty(){
-                    let mut asts_op_stack_offset = asts_op_stack.len() - 1;
+                    let mut asts_op_stack_offset = asts_op_stack.len() - 1; 
                     let this_op_bottom = &mut
                         if pot_op {
                             openers_bottom_asts_and_opening[total_count % 3]
@@ -672,13 +806,16 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                             openers_bottom_asts_not_opening[total_count % 3]
                         };
                     let mut matching_dl_index_op = None;
-                    while asts_op_stack_offset >= 0 && this_op_bottom.map_or(true, |x| asts_op_stack[asts_op_stack_offset] > x){
-                        if let Asts(op_tc, op_used, true, op_pc) = stack.get(asts_op_stack[asts_op_stack_offset]).inline_component {
-                            if (op_pc || pot_op) && (total_count + op_tc % 3 == 0 && !(total_count %3 == 0 && op_tc %3 == 0)) {
+                    while asts_op_stack_offset >= 0 && this_op_bottom.map_or(true, |x| asts_op_stack[asts_op_stack_offset].1 > x){
+                        if let Asts(op_tc, op_used, true, op_pc) = (stack.get(asts_op_stack[asts_op_stack_offset].0).inline_component) {
+                            if ((op_pc || pot_op)) && (total_count + op_tc) % 3 == 0 && !(total_count %3 == 0 && op_tc %3 == 0) {
+                                if asts_op_stack_offset == 0 {
+                                    break;
+                                }
                                 asts_op_stack_offset -= 1;
                                 continue;
                             } else {
-                                matching_dl_index_op = Some(asts_op_stack[asts_op_stack_offset]);
+                                matching_dl_index_op = Some(asts_op_stack[asts_op_stack_offset].0);
                                 break;
                             }
                         } else {
@@ -693,6 +830,7 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                         let matching_dl_unconsumed = op_tc - op_used;
                         let this_dl_unconsumed = total_count - consumed;
                         let is_strong = matching_dl_unconsumed >=2 && this_dl_unconsumed >= 2;
+                        // turn stack items inside the stack delimiters into actual inline content.
                         let mut emph_children: Vec<InlineContent> = vec![];
                         let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
                         while node_to_eat_index_op.map_or(false, |ntei|stack.get(ntei).beginning_char_index < current_beginning_char_index) {
@@ -700,8 +838,13 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                             emph_children.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
                             node_to_eat_index_op = nte.index_of_next;
                         }
-                        stack.delete_stack_until_node(matching_dl_index, current_index);
-                        stack.push_back(stack.get(matching_dl_index).beginning_char_index + op_tc, 
+                        // also clear out any delimiters on the stacks weve made in this function
+                        while let Some((dll_index, opener_char_index)) = unds_op_stack.pop_if(|(_, opener_char)|
+                            {*opener_char > stack.get(matching_dl_index).beginning_char_index}){}
+                        while let Some((dll_index, opener_char_index)) = asts_op_stack.pop_if(|(_, opener_char)|
+                            {*opener_char > stack.get(matching_dl_index).beginning_char_index}){}
+                        stack.replace_inside_stack_range(matching_dl_index, 
+                            current_index, stack.get(matching_dl_index).beginning_char_index + op_tc, 
                             CompletedContent(
                                 if is_strong {
                                     Strong(emph_children)
@@ -710,130 +853,239 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                                 }
                                 )
                             );
-                        let mut used_is_total;
+                        let closer_used_is_total;
                         if let Asts(total, used,..) = &mut stack.get_mut(current_index).inline_component {
-                            *used += if is_strong {2} else {1                                    };
-                            used_is_total = *used == *total;
+                            *used += if is_strong {2} else {1};
+                            closer_used_is_total = *used == *total;
                         } else {
                             panic!("expect unds");
                         }
-                            if used_is_total {
-                                stack.remove_at_index(current_index);
-                            }
+                        if closer_used_is_total {
+                            current_index_op = stack.get_next(stack.get(current_index)).map(|s|s.index_of_this);
+                            stack.remove_at_index(current_index);
+                        }
+                        let mut opener_used_is_total = false;
                         if let Asts(total, used,..) = &mut stack.get_mut(matching_dl_index).inline_component {
                             *used += if is_strong {2} else {1};
-                            used_is_total = *used == *total;
+                            opener_used_is_total = *used == *total;
+                        } else {
+                            panic!("expected asts")
                         }
-                        if used_is_total {
-                                stack.remove_at_index(matching_dl_index);
-                                asts_op_stack.remove(asts_op_stack_offset);
-                            }
+                        if opener_used_is_total {
+                            stack.remove_at_index(matching_dl_index);
+                            asts_op_stack.remove(asts_op_stack_offset);
+                        }
                         continue;
                     } else {
                         *this_op_bottom = stack.get(current_index).index_of_prev;
                         if pot_op {
-                            unds_op_stack.push(stack.get(current_index).index_of_this);
+                            asts_op_stack.push((current_index, stack.get(current_index).beginning_char_index));
                         }
                         // we don't need a notion of "deleting" non potential_openers Since
                         // we track backwards in a different stack than this.
                         current_index_op = stack.get(current_index).index_of_next;
                     }
                 } else if pot_op {
-                    asts_op_stack.push(current_index);
+                    asts_op_stack.push((current_index, stack.get(current_index).beginning_char_index));
                     current_index_op = stack.get(current_index).index_of_next;
                 } else {
                     current_index_op = stack.get(current_index).index_of_next;
                 }
             }
             Unds(total_count,consumed, pot_op, pot_clos) => {
-                todo!();
-                // let stack_bottom_this_type = if pot_op {openers_bottom_asts_not_opening[total_count % 3] } else {
-                //     openers_bottom_unds_and_opening[total_count % 3]
-                // };
-                // if pot_clos {
-                //     let mut unds_op_stack_offset = unds_op_stack.len() - 1;
-                //     let this_op_bottom = &mut
-                //         if pot_op {
-                //             openers_bottom_unds_and_opening[total_count % 3]
-                //         } else {
-                //             openers_bottom_unds_not_opening[total_count % 3]
-                //         };
-                //     let mut matching_dl_index_op = None;
-                //     while unds_op_stack_offset >= 0 && this_op_bottom.map_or(true, |x| unds_op_stack[unds_op_stack_offset] > x){
-                //         if let Unds(op_tc, op_used, true, op_pc) = stack.get(unds_op_stack[unds_op_stack_offset]).inline_component {
-                //             if (op_pc || pot_op) && (total_count + op_tc % 3 == 0 && !(total_count %3 == 0 && op_tc %3 == 0)) {
-                //                 unds_op_stack_offset -= 1;
-                //                 continue;
-                //             } else {
-                //                 matching_dl_index_op = Some(unds_op_stack[unds_op_stack_offset]);
-                //                 break;
-                //             }
-                //         } else {
-                //             panic!("should be some unds here")
-                //         }
-                //     }
-                //     if let Some(matching_dl_index) = matching_dl_index_op {
-                //         if let Unds(op_tc, op_used,..) = stack.get(matching_dl_index).inline_component{
-                //             let matching_dl_unconsumed = op_tc - op_used;
-                //             let this_dl_unconsumed = total_count - consumed;
-                //             let is_strong = matching_dl_unconsumed >=2 && this_dl_unconsumed >= 2;
-                //             let mut emph_children: Vec<InlineContent> = vec![];
-                //             let mut node_to_eat = stack.get_next(stack.get(matching_dl_index));
-                //             while node_to_eat.map_or(false, |cn|cn.beginning_char_index < current_beginning_char_index) {
-                //                 emph_children.push(node_to_eat.unwrap().inline_component.to_inline_content(node_to_eat.unwrap().beginning_char_index));
-                //                 node_to_eat = stack.get_next(node_to_eat.unwrap());
-                //             }
-                //             stack.delete_stack_until_node(matching_dl_index, cp_index);
-                //             stack.push_back(stack.get(matching_dl_index).beginning_char_index + op_tc, 
-                //                 CompletedContent(
-                //                     if is_strong {
-                //                         Strong(emph_children)
-                //                     } else {
-                //                         Emph(emph_children)
-                //                     }
-                //                     )
-                //                 );
-                //             let mut used_is_total;
-                //             if let Unds(total, used,..) = &mut stack.get(cp_index).inline_component {
-                //                 *used += if is_strong {2} else {1                                    };
-                //                 used_is_total = *used == *total;
-                //             } else {
-                //                 panic!("expect unds");
-                //             }
-                //                 if used_is_total {
-                //                     stack.remove_at_index(cp_index);
-                //                 }
-                //             if let Unds(total, used,..) = &mut stack.get(matching_dl_index).inline_component {
-                //                 *used += if is_strong {2} else {1};
-                //                 used_is_total = *used == *total;
-                //             }
-                //             if used_is_total {
-                //                     stack.remove_at_index(matching_dl_index);
-                //                     unds_op_stack.remove(unds_op_stack_offset);
-                //                 }
-                //
-                //         } else {
-                //             panic!("should be unds here too")
-                //         }
-                //         continue;
-                //     } else {
-                //         *this_op_bottom = stack.get(cp_index).index_of_prev;
-                //         if pot_op {
-                //             unds_op_stack.push(stack.get(cp_index).index_of_this);
-                //         }
-                //         // we don't need a notion of "deleting" non potential_openers Since
-                //         // we track backwards in a different stack than this.
-                //         current_position = stack.get(cp_index).index_of_next;
-                //     }
-                // } else {
-                //     unds_op_stack.push(current_dllnode.index_of_this);
-                // }
+                dbg!(&unds_op_stack);
+                if pot_clos && !unds_op_stack.is_empty(){
+                    let mut unds_op_stack_offset = unds_op_stack.len() - 1; 
+                    let this_op_bottom = &mut
+                        if pot_op {
+                            openers_bottom_unds_and_opening[total_count % 3]
+                        } else {
+                            openers_bottom_unds_not_opening[total_count % 3]
+                        };
+                    let mut matching_dl_index_op = None;
+                    while unds_op_stack_offset >= 0 && this_op_bottom.map_or(true, |x| unds_op_stack[unds_op_stack_offset].1 > x){
+                        if let Unds(op_tc, op_used, true, op_pc) = stack.get(unds_op_stack[unds_op_stack_offset].0).inline_component {
+                            if (op_pc || pot_op) && (total_count + op_tc % 3 == 0 && !(total_count %3 == 0 && op_tc %3 == 0)) {
+                                if unds_op_stack_offset == 0 {
+                                    break;
+                                }
+                                unds_op_stack_offset -= 1;
+                                continue;
+                            } else {
+                                matching_dl_index_op = Some(unds_op_stack[unds_op_stack_offset].0);
+                                break;
+                            }
+                        } else {
+                            panic!("should be some unds here")
+                        }
+                    }
+                    if let Some(matching_dl_index) = matching_dl_index_op {
+                        let (op_tc, op_used) = match stack.get(matching_dl_index).inline_component {
+                            Unds(ot, ou,..) => (ot, ou),
+                            _ => panic!("should be Unds here")
+                        };
+                        let matching_dl_unconsumed = op_tc - op_used;
+                        let this_dl_unconsumed = total_count - consumed;
+                        let is_strong = matching_dl_unconsumed >=2 && this_dl_unconsumed >= 2;
+                        // turn stack items inside the stack delimiters into actual inline content.
+                        let mut emph_children: Vec<InlineContent> = vec![];
+                        let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
+                        while node_to_eat_index_op.map_or(false, |ntei|stack.get(ntei).beginning_char_index < current_beginning_char_index) {
+                            let nte = stack.get_mut(node_to_eat_index_op.unwrap());
+                            emph_children.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
+                            node_to_eat_index_op = nte.index_of_next;
+                        }
+                        // also clear out any delimiters on the stacks weve made in this function
+                        while let Some((dll_index, opener_char_index)) = unds_op_stack.pop_if(|(_, opener_char)|
+                            {*opener_char > stack.get(matching_dl_index).beginning_char_index}){}
+                        while let Some((dll_index, opener_char_index)) = asts_op_stack.pop_if(|(_, opener_char)|
+                            {*opener_char > stack.get(matching_dl_index).beginning_char_index}){}
+                        stack.replace_inside_stack_range(matching_dl_index, 
+                            current_index, stack.get(matching_dl_index).beginning_char_index + op_tc, 
+                            CompletedContent(
+                                if is_strong {
+                                    Strong(emph_children)
+                                } else {
+                                    Emph(emph_children)
+                                }
+                                )
+                            );
+                        let closer_used_is_total;
+                        if let Unds(total, used,..) = &mut stack.get_mut(current_index).inline_component {
+                            *used += if is_strong {2} else {1};
+                            closer_used_is_total = *used == *total;
+                        } else {
+                            panic!("expect unds");
+                        }
+                        if closer_used_is_total {
+                            current_index_op = stack.get_next(stack.get(current_index)).map(|s|s.index_of_this);
+                            stack.remove_at_index(current_index);
+                        }
+                        let mut opener_used_is_total = false;
+                        if let Unds(total, used,..) = &mut stack.get_mut(matching_dl_index).inline_component {
+                            *used += if is_strong {2} else {1};
+                            opener_used_is_total = *used == *total;
+                        } else {
+                            panic!("expected unds")
+                        }
+                        if opener_used_is_total {
+                            stack.remove_at_index(matching_dl_index);
+                            unds_op_stack.remove(unds_op_stack_offset);
+                        }
+                        continue;
+                    } else {
+                        *this_op_bottom = stack.get(current_index).index_of_prev;
+                        if pot_op {
+                            unds_op_stack.push((current_index, stack.get(current_index).beginning_char_index));
+                        }
+                        // we don't need a notion of "deleting" non potential_openers Since
+                        // we track backwards in a different stack than this.
+                        current_index_op = stack.get(current_index).index_of_next;
+                    }
+                } else if pot_op {
+                    unds_op_stack.push((current_index, stack.get(current_index).beginning_char_index));
+                    current_index_op = stack.get(current_index).index_of_next;
+                } else {
+                    current_index_op = stack.get(current_index).index_of_next;
+                }
             }
-            _ =>         current_index_op = stack.dl_stack[current_index].index_of_next
-,
+
+
+            // {
+            //     if pot_clos && !unds_op_stack.is_empty(){
+            //         let mut unds_op_stack_offset = unds_op_stack.len() - 1; 
+            //         let this_op_bottom = &mut
+            //             if pot_op {
+            //                 openers_bottom_unds_and_opening[total_count % 3]
+            //             } else {
+            //                 openers_bottom_unds_not_opening[total_count % 3]
+            //             };
+            //         let mut matching_dl_index_op = None;
+            //         while unds_op_stack_offset >= 0 && this_op_bottom.map_or(true, |x| unds_op_stack[unds_op_stack_offset].1 > x){
+            //             if let Unds(op_tc, op_used, true, op_pc) = stack.get(unds_op_stack[unds_op_stack_offset].0).inline_component {
+            //                 if (op_pc || pot_op) && (total_count + op_tc % 3 == 0 && !(total_count %3 == 0 && op_tc %3 == 0)) {
+            //                     if unds_op_stack_offset == 0 {
+            //                         break;
+            //                     }
+            //                     unds_op_stack_offset -= 1;
+            //                     continue;
+            //                 } else {
+            //                     matching_dl_index_op = Some(unds_op_stack[unds_op_stack_offset].0);
+            //                     break;
+            //                 }
+            //             } else {
+            //                 panic!("should be some unds here")
+            //             }
+            //         }
+            //         if let Some(matching_dl_index) = matching_dl_index_op {
+            //             let (op_tc, op_used) = match stack.get(matching_dl_index).inline_component {
+            //                 Unds(ot, ou,..) => (ot, ou),
+            //                 _ => panic!("should be Unds here")
+            //             };
+            //             let matching_dl_unconsumed = op_tc - op_used;
+            //             let this_dl_unconsumed = total_count - consumed;
+            //             let is_strong = matching_dl_unconsumed >=2 && this_dl_unconsumed >= 2;
+            //             // turn stack items inside the stack delimiters into actual inline content.
+            //             let mut emph_children: Vec<InlineContent> = vec![];
+            //             let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
+            //             while node_to_eat_index_op.map_or(false, |ntei|stack.get(ntei).beginning_char_index < current_beginning_char_index) {
+            //                 let nte = stack.get_mut(node_to_eat_index_op.unwrap());
+            //                 emph_children.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
+            //                 node_to_eat_index_op = nte.index_of_next;
+            //             }
+            //             stack.replace_inside_stack_range(matching_dl_index, 
+            //                 current_index, stack.get(matching_dl_index).beginning_char_index + op_tc, 
+            //                 CompletedContent(
+            //                     if is_strong {
+            //                         Strong(emph_children)
+            //                     } else {
+            //                         Emph(emph_children)
+            //                     }
+            //                     )
+            //                 );
+            //             let mut used_is_total;
+            //             if let Unds(total, used,..) = &mut stack.get_mut(current_index).inline_component {
+            //                 *used += if is_strong {2} else {1                                    };
+            //                 used_is_total = *used == *total;
+            //             } else {
+            //                 panic!("expect unds");
+            //             }
+            //                 if used_is_total {
+            //                     stack.remove_at_index(current_index);
+            //                 }
+            //             if let Unds(total, used,..) = &mut stack.get_mut(matching_dl_index).inline_component {
+            //                 *used += if is_strong {2} else {1};
+            //                 used_is_total = *used == *total;
+            //             }
+            //             if used_is_total {
+            //                     stack.remove_at_index(matching_dl_index);
+            //                     unds_op_stack.remove(unds_op_stack_offset);
+            //                 }
+            //             continue;
+            //         } else {
+            //             *this_op_bottom = stack.get(current_index).index_of_prev;
+            //             if pot_op {
+            //                 unds_op_stack.push((current_index, stack.get(current_index).beginning_char_index));
+            //             }
+            //             // we don't need a notion of "deleting" non potential_openers Since
+            //             // we track backwards in a different stack than this.
+            //             current_index_op = stack.get(current_index).index_of_next;
+            //         }
+            //     } else if pot_op {
+            //         unds_op_stack.push((current_index, stack.get(current_index).beginning_char_index));
+            //         current_index_op = stack.get(current_index).index_of_next;
+            //     } else {
+            //         current_index_op = stack.get(current_index).index_of_next;
+            //     }
+            // }
+            _ =>         current_index_op = stack.dl_stack[current_index].index_of_next,
         }
     }
 
+    for dl_node in stack.iter() {
+        dbg!(dl_node);
+    }
+    dbg!(asts_op_stack);
     let mut out = vec![];
     // now we can iterate through the stack above stack_bottom
     let mut ntei_op = stack_bottom.map_or(

@@ -175,7 +175,7 @@ fn main() {
                 }
                 _ => {
                     if punc_range.0 != 0 {
-                        symbols.push((
+                        punctuations.push((
                             char::from_u32(punc_range.0).unwrap(),
                             char::from_u32(punc_range.1).unwrap(),
                         ));
