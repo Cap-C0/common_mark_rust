@@ -29,18 +29,26 @@ pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
     string_builder.push_str(x);
 }
 
-pub enum ASTParent {
-    Paragraph,
+pub enum TextType<'a> {
+    // ends with backslash
+    Paragraph(&'a mut bool),
     InfoString,
 }
 
-pub fn push_chars_with_entities_and_bs(chars: &[char], string_builder: &mut String) {
+pub fn push_chars_with_entities_and_bs(
+    chars: &[char],
+    string_builder: &mut String,
+    type_of_text: &mut TextType,
+) {
     let mut char_index = 0;
     while char_index < chars.len() {
         //TODO: escapes and entity and numeric references.
         if chars[char_index] == '\\' {
             if char_index + 1 >= chars.len() {
-                push_html_reserved_char('\\', string_builder);
+                match type_of_text {
+                    TextType::Paragraph(ends_w_backslash) => **ends_w_backslash = false,
+                    TextType::InfoString => push_html_reserved_char('\\', string_builder),
+                }
                 char_index += 1
             } else {
                 if !chars[char_index + 1].is_ascii_punctuation() {

@@ -451,6 +451,16 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     while let Some((char_index, &c)) = char_iter.next() {
         match c {
             '\\' => {
+                if let Some((next_char_index, &'`')) = char_iter.peek() {
+                    // see if that form a codespan.
+                    let mut tick_count = 1;
+                    while char_iter.peek().map_or(false, |&(_, &c)| c == '`') {
+                        tick_count += 1;
+                        char_iter.next();
+                    }
+
+                    // otherwise its an espaped backtick.
+                }
                 if char_iter.peek().map_or(false, |&(_,&d)| d != '`'){
                     char_iter.next();
                 }
@@ -472,7 +482,6 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                     }
                     next_node = delimit_stack.get_next(dllnode);
                 }
-                
                 if let Some(matching_node) = next_node {
                     let starting_char_index = matching_node.beginning_char_index;
                     let index_of_matching = matching_node.index_of_this;
