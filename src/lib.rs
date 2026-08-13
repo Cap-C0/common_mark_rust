@@ -193,7 +193,26 @@ fn check_continuation_conditions(
                     break;
                 }
                 //TODO make this recognize tabs
-                *char_offset += 4;
+                let mut chars_eaten = 0;
+                let mut sub_column_number = *effective_column_number;
+                while line.len() > *char_offset + chars_eaten
+                    && ((sub_column_number - *effective_column_number)
+                        + *additional_possible_spaces)
+                        < 4
+                {
+                    if line[*char_offset + chars_eaten] == ' ' {
+                        sub_column_number += 1;
+                    } else if line[*char_offset + chars_eaten] == '\t' {
+                        sub_column_number += 4 - (sub_column_number % 4);
+                    } else {
+                        break 'outer;
+                    }
+                    chars_eaten += 1;
+                }
+                *additional_possible_spaces = (sub_column_number - *effective_column_number)
+                    + *additional_possible_spaces
+                    - 4;
+                *char_offset += chars_eaten;
                 //dont eat blank characters before the first 4 spaces
                 *open_block_depth += 1;
                 break;

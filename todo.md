@@ -21,14 +21,14 @@
 - [x] create build scripts for unicode properties and json_tests 
 - [ ] inline parsing
   - [x] code spans
-  - [ ] emphasis.
+  - [x] emphasis.
   - [ ] links
   - [ ] Images
   - [ ] Autolinks
   - [ ] html
   - [ ] soft line break
   - [ ] hard line breaks
-- [ ] text stuff
-  - [ ] entity and numeric char references.
-  - [ ] backslash escapes.
-  - [ ] insecure characters
+- [x] text stuff
+  - [x] entity and numeric char references.
+  - [x] backslash escapes.
+  - [x] insecure characters
