@@ -323,12 +323,12 @@ impl Block {
                 string_builder.push_str("<pre><code");
                 if lang_hint.len() > 0 {
                     string_builder.push_str(" class=\"language-");
-                    push_chars_with_entities_and_bs(items, string_builder);
+                    push_chars_with_entities_and_bs(lang_hint, string_builder);
                     string_builder.push('\"');
                 }
                 string_builder.push('>');
                 for c in items {
-                    string_builder.push(*c);
+                    push_html_reserved_char(*c, string_builder);
                 }
                 string_builder.push_str("</code></pre>\n");
             }

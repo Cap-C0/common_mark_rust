@@ -192,7 +192,6 @@ fn check_continuation_conditions(
                 if line.len() > post_space_char_offset && i < 4 {
                     break;
                 }
-                //TODO make this recognize tabs
                 let mut chars_eaten = 0;
                 let mut sub_column_number = *effective_column_number;
                 while line.len() > *char_offset + chars_eaten
@@ -209,11 +208,13 @@ fn check_continuation_conditions(
                     }
                     chars_eaten += 1;
                 }
-                *additional_possible_spaces = (sub_column_number - *effective_column_number)
-                    + *additional_possible_spaces
-                    - 4;
+                if (sub_column_number - *effective_column_number) + *additional_possible_spaces > 4
+                {
+                    *additional_possible_spaces = (sub_column_number - *effective_column_number)
+                        + *additional_possible_spaces
+                        - 4;
+                }
                 *char_offset += chars_eaten;
-                //dont eat blank characters before the first 4 spaces
                 *open_block_depth += 1;
                 break;
             }
@@ -1271,6 +1272,7 @@ fn create_new_block_starts(
             match document.get_block(*obd) {
                 IndentedCodeBlock(_, unrealized_blanks) => {
                     let mut next_blank = vec![];
+                    // still need to be better recognizng tabs here
                     if line.len() > *char_offset {
                         next_blank = line[*char_offset..].iter().map(|&c| c).collect();
                     }
@@ -1302,6 +1304,7 @@ fn create_new_block_starts(
     match document.get_block(*obd) {
         IndentedCodeBlock(chars, spaces) => {
             for s in spaces.iter() {
+                dbg!(s);
                 chars.push('\n');
                 for c in s {
                     chars.push(*c);
@@ -1309,6 +1312,7 @@ fn create_new_block_starts(
             }
             *spaces = vec![];
             chars.push('\n');
+            dbg!(&char_offset);
             chars.append(&mut line[*char_offset..].iter().map(|c| *c).collect());
             return;
         }
@@ -1327,7 +1331,7 @@ fn create_new_block_starts(
                     _ => (),
                 }
             }
-            println!("line: {:?} can be added!", &line[*char_offset..]);
+            // println!("line: {:?} can be added!", &line[*char_offset..]);
             //TODO make this recognize tabs
             chars.append(
                 &mut line[*char_offset + std::cmp::min(pre_space_count, *indent_count)..]
@@ -1701,7 +1705,7 @@ fn create_new_block_starts(
                     }
                     ffs_char_offset += 1;
                 }
-                dbg!(space_count);
+                // dbg!(space_count);
                 let mut line_start = vec![' '; space_count - 4];
                 for c in &line[*char_offset + ffs_char_offset..] {
                     line_start.push(*c);

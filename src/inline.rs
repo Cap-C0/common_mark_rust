@@ -26,7 +26,7 @@ impl Inline {
     }
 
     pub fn fill_content(&mut self, lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)>) {
-        dbg!("called_fill_content");
+        // dbg!("called_fill_content");
         assert!(self.content.is_empty());
         self.content = parse_inline(&self.chars, lrd_table)
     }
@@ -100,7 +100,9 @@ impl InlineContent {
                     }
                 }
                 if entirely_space && strip_space {
+                    if *start != *end - 1{
                     push_html_reserved_char(' ', string_builder);
+                    }
                     push_html_reserved_char(' ', string_builder);
                 }
                 string_builder.push_str("</code>");
@@ -487,7 +489,7 @@ impl<'a> Iterator for FakeDLLIter<'a> {
 //"tighter" binding parser returns first!
 pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)> ) -> Vec<InlineContent> {
     // pointer, _, offset_to_next, offset_to_prev
-    dbg!("called parse inline!");
+    // dbg!("called parse inline!");
     let mut delimit_stack = FakeDelimiterDLL{
         dl_stack: vec![],
         initial_index: None,
@@ -705,7 +707,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     }
     add_text_to_stack(&mut delimit_stack, text_begin, chars.len());
 
-    dbg!(&delimit_stack);
+    // dbg!(&delimit_stack);
     // dbg!(&delimit_stack);
     // now at end of line we look through our stacks
     process_emphasis(None, &mut delimit_stack)
@@ -771,7 +773,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
 // fsub: forward search upper bound
 // boolean tells caller if it contains a link, deepest nested link has priority
 fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) -> Vec<InlineContent>{
-    dbg!("processing emph");
+    // dbg!("processing emph");
     let mut current_index_op = stack_bottom.map_or(stack.initial_index, 
         |i|{
             stack.get(i).index_of_next
@@ -1082,10 +1084,10 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
         }
     }
 
-    for dl_node in stack.iter() {
-        dbg!(dl_node);
-    }
-    dbg!(asts_op_stack);
+    // for dl_node in stack.iter() {
+    //     dbg!(dl_node);
+    // }
+    // dbg!(asts_op_stack);
     let mut out = vec![];
     // now we can iterate through the stack above stack_bottom
     let mut ntei_op = stack_bottom.map_or(
