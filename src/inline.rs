@@ -1,9 +1,13 @@
+use serde_json::Value::Array;
+
 use crate::inline::InlineTextComponent::*;
 use crate::inline::{InlineContent::*};
+use crate::chars::*;
 use core::panic;
 use std::arch::aarch64;
 use std::collections::{HashMap, VecDeque};
 use std::{mem, vec};
+
 
 include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 
@@ -58,39 +62,8 @@ impl InlineContent {
         match self {
             Softbreak => string_builder.push_str("\n"),
             Hardbreak => string_builder.push_str("<br />\n"),
-            Text(start, end) => {
-                let mut char_index = *start;
-                while char_index < *end {
-                    //TODO: escapes and entity and numeric references.
-                    if characters[char_index] == '&' {
-                        let amp_index = char_index;
-                        let matched_entity = None;
-                        if char_index + 1 < *end && characters[char_index + 1] == '#' {
-                            char_index += 1;
-                            if char_index + 1 < *end && "Xx".contains(characters[char_index + 1]) {
-                                //hexadecimal
-                            } else {
-
-                            }
-                            //do the decimal thing
-                            // 1-7 digits or
-                        } else {
-                            //  do the entity html entity reference
-                        }
-                        if matched_entity.is_some() {
-                            push_html_reserved_char(matched_entity.unwrap(), string_builder);
-                            char_index +=1;
-                        } else {
-                            for i in amp_index..char_index {
-                                push_html_reserved_char(characters[i], string_builder);
-                            }
-                            char_index+=1;
-                        }
-                    } else {
-                        push_html_reserved_char(characters[char_index], string_builder);
-                        char_index+=1;
-                    }
-                }
+            Text(start, end) => { 
+                push_chars_with_entities_and_bs(&characters[*start..*end], string_builder);
             },
             Emph(inline_contents) => {
                 string_builder.push_str("<em>");
@@ -116,22 +89,11 @@ impl InlineContent {
                 }
                 string_builder.push_str("</code>");
             },
-            Dummy => todo!(),
+            Dummy => panic!("should not encounter dummy at this point"),
         }
     }
 }
 
-pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
-        let x = match c {
-            '<' => "&lt;",
-            '>' => "&gt;",
-            '&' => "&amp;",
-            '"' => "&quot;",
-            '\'' => "&apos;",
-            _ => &c.to_string()
-        };
-    string_builder.push_str(x);
-}
 
 /*
  * returns Some(k) if text matches [.*(c| c != " \t\n")*.*]
@@ -602,7 +564,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     }
     add_text_to_stack(&mut delimit_stack, text_begin, chars.len());
 
-    dbg!(&delimit_stack);
+    // dbg!(&delimit_stack);
     // now at end of line we look through our stacks
     process_emphasis(None, &mut delimit_stack)
 }

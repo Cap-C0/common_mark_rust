@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use crate::{
     ast_types::{Block::*, ListType::*},
-    inline::{Inline, InlineContent, parse_inline, push_html_reserved_char},
+    chars::{push_chars_with_entities_and_bs, push_html_reserved_char},
+    inline::{Inline, InlineContent, parse_inline},
 };
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -298,6 +299,7 @@ impl Block {
                 if !in_tight_list && il.chars.len() > 0 {
                     string_builder.push_str("</p>\n");
                 }
+                dbg!(&string_builder);
             }
             ThematicBreak => {
                 if string_builder.len() > 0 && !string_builder.ends_with('\n') {
@@ -322,9 +324,7 @@ impl Block {
                 string_builder.push_str("<pre><code");
                 if lang_hint.len() > 0 {
                     string_builder.push_str(" class=\"language-");
-                    for c in lang_hint {
-                        push_html_reserved_char(*c, string_builder);
-                    }
+                    push_chars_with_entities_and_bs(items, string_builder);
                     string_builder.push('\"');
                 }
                 string_builder.push('>');

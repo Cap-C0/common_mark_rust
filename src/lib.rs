@@ -6,6 +6,7 @@ use crate::inline::*;
 use std::collections::HashMap;
 use std::mem;
 pub mod ast_types;
+pub mod chars;
 pub mod inline;
 
 pub fn markdown_to_html(markdown: &str) -> String {
@@ -70,6 +71,7 @@ pub fn markdown_to_html(markdown: &str) -> String {
     document.parse_inlines(&lrd_table);
 
     dbg!(&document);
+    // dbg!(&document);
 
     document.to_html()
 }

@@ -32,6 +32,7 @@ struct TrieNode {
     children: HashMap<char, TrieNode>,
     value: Option<Vec<char>>,
 }
+
 impl TrieNode {
     pub fn add_str(&mut self, mut string_in: Chars, value: Vec<char>) {
         let mut current: &mut Self = self;
@@ -51,6 +52,34 @@ impl TrieNode {
     pub fn get_child(&self, c: char) -> Option<&Self> {
         self.children.get(&c)
     }
+
+    pub fn to_phf_code(&self, string_builder: &mut String) {
+        string_builder.push_str(
+            "StaticTrieNode{
+            children: phf_map!{",
+        );
+        for (character, child) in self.children.iter() {
+            string_builder.push_str(&format!("'{}' => ", character));
+            child.to_phf_code(string_builder);
+            string_builder.push_str(",");
+        }
+        string_builder.push_str("},\n");
+        string_builder.push_str("value: ");
+        self.value
+            .clone()
+            .map_or("None".to_string(), |chars| format!("Some(&{:?})", chars))
+            .chars()
+            .for_each(|c| string_builder.push(c));
+        string_builder.push_str(
+            ",
+            }",
+        );
+    }
+}
+
+struct StaticTrieNode {
+    children: phf::Map<char, StaticTrieNode>,
+    value: Option<&'static [char]>,
 }
 
 fn main() {
@@ -89,9 +118,6 @@ fn main() {
         });
 
         let expanded = quote! {
-            use ntest::timeout;
-            use pretty_assertions::assert_eq;
-
             #(#tests)*
         };
 
@@ -218,6 +244,24 @@ fn main() {
                     .collect(),
             )
         }
+        let mut string_builder = String::new();
+
+        // let pre_structure = quote! {
+        //     use phf::phf_map;
+        //
+        //     #[derive(Debug)]
+        //     struct StaticTrieNode {
+        //         children: phf::Map<char, StaticTrieNode>,
+        //         value: Option<&'static [char]>,
+        //     }
+        // };
+        //
+        // string_builder.push_str(&pre_structure.to_string());
+
+        string_builder.push_str("pub static HTML_ENTITIES: StaticTrieNode = ");
+        base_trie.to_phf_code(&mut string_builder);
+        string_builder.push_str(";\n");
+        fs::write(html_entities_funs, string_builder).unwrap();
     }
 }
 
