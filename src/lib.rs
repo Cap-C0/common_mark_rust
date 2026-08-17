@@ -70,7 +70,7 @@ pub fn markdown_to_html(markdown: &str) -> String {
 
     document.parse_inlines(&lrd_table);
 
-    // dbg!(&document);
+    dbg!(&document);
     // dbg!(&document);
 
     document.to_html()
@@ -767,11 +767,10 @@ fn html_start_encountered(
     if line[char_offset_after_space] == '<' {
         let mut is_open_tag = true;
         let mut tag_offset = char_offset_after_space + 1;
-        if line.len() > tag_offset && dbg!(line[tag_offset]) == '/' {
+        if line.len() > tag_offset && line[tag_offset] == '/' {
             tag_offset += 1;
             is_open_tag = false;
         }
-        dbg!(tag_offset);
         for rt in reserved_tags {
             if simple_starts_with(rt)(&line[tag_offset..])
                 && (line.len() == tag_offset + rt.len()
@@ -789,87 +788,23 @@ fn html_start_encountered(
             }
         }
 
-        let parse_attribute = |line_in: &[char]| -> Option<usize> {
-            let mut offset = 0;
-            while " \t".contains(line_in[offset]) {
-                offset += 1;
-            }
-            if line_in.len() <= offset
-                || !("_:".contains(line_in[offset]) || line_in[offset].is_alphabetic())
-            {
-                return None;
-            }
-            offset += 1;
-            while line_in.len() > offset
-                && ("_.:-".contains(line_in[offset]) || line_in[offset].is_ascii_alphanumeric())
-            {
-                offset += 1;
-            }
-            let pre_val_offset = offset;
-
-            while line_in.len() > offset && " \t".contains(line_in[offset]) {
-                offset += 1;
-            }
-            if line_in.len() <= offset || line_in[offset] != '=' {
-                return Some(pre_val_offset);
-            }
-            offset += 1;
-            while line_in.len() > offset && " \t".contains(line_in[offset]) {
-                offset += 1;
-            }
-            if line_in.len() <= offset {
-                return Some(pre_val_offset);
-            }
-            let c = line_in[offset];
-            if "\"\'".contains(c) {
-                offset += 1;
-                while line_in.len() > offset && line_in[offset] != c {
-                    offset += 1;
-                }
-                offset += 1;
-                return Some(offset);
-            }
-            while line_in.len() > offset && !" \t\"\'=<>`".contains(line_in[offset]) {
-                offset += 1;
-            }
-            Some(offset)
-        };
         // non reserved (type 7) cant interrupt paragraph
         if open_par_above {
             return None;
         }
 
-        //parse tag name
-        if line.len() <= tag_offset || !line[tag_offset].is_ascii_alphabetic() {
-            return None;
-        }
-        while line.len() > tag_offset
-            && (line[tag_offset] == '-' || line[tag_offset].is_ascii_alphanumeric())
-        {
-            tag_offset += 1
-        }
-        dbg!(tag_offset);
-
-        //optional attributes
         if is_open_tag {
-            while let Some(x) = dbg!(parse_attribute(&line[tag_offset..])) {
-                tag_offset += x;
-                dbg!(&line[tag_offset..]);
+            if let Some(chars_eaten) = parse_opening_tag(&line[tag_offset..]) {
+                tag_offset += chars_eaten;
+            } else {
+                return None;
             }
-        }
-        //trailing white space
-        while line.len() > tag_offset && " \t".contains(line[tag_offset]) {
-            tag_offset += 1;
-        }
-
-        if is_open_tag && line.len() > tag_offset && line[tag_offset] == '/' {
-            tag_offset += 1;
-        }
-
-        if line.len() > tag_offset && line[tag_offset] == '>' {
-            tag_offset += 1;
         } else {
-            return None;
+            if let Some(chars_eaten) = parse_closing_tag(&line[tag_offset..]) {
+                tag_offset += chars_eaten;
+            } else {
+                return None;
+            }
         }
 
         if line[tag_offset..].iter().all(|&c| " \t".contains(c)) {

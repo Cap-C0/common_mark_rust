@@ -1,3 +1,4 @@
+use serde::de;
 use serde_json::Value::Array;
 
 use crate::inline::InlineTextComponent::*;
@@ -52,6 +53,8 @@ pub enum InlineContent {
     Link((usize, usize), (usize, usize), Vec<InlineContent>),
     /// src, title, link_text
     Image((usize, usize), (usize, usize), Vec<InlineContent>),
+    /// href and text, is_email
+    AutoLink((usize, usize), bool),
     Code((usize,usize)),
     // for use when swapping memory
     Dummy, 
@@ -82,6 +85,21 @@ impl InlineContent {
             }
             Link(_, _, inline_contents) => todo!(),
             Image(_, _, inline_contents) => todo!(),
+            AutoLink((first_char,last_char), is_email) => {
+                string_builder.push_str("<a href=\"");
+                if *is_email {
+                    string_builder.push_str("mailto:");
+                }
+                for ci in *first_char..*last_char {
+                    push_html_reserved_char(characters[ci], string_builder);
+                }
+                string_builder.push_str("\">");
+                for ci in *first_char..*last_char {
+                    push_html_reserved_char(characters[ci], string_builder);
+                }
+                string_builder.push_str("</a>");
+                
+            },
             Code((start, end)) => {
                 let mut strip_space = false;
                 dbg!(characters);
@@ -99,9 +117,9 @@ impl InlineContent {
                         push_html_reserved_char(characters[i], string_builder);
                     }
                 }
-                if entirely_space && strip_space {
+                if !entirely_space && strip_space {
                     if *start != *end - 1{
-                    push_html_reserved_char(' ', string_builder);
+                        push_html_reserved_char(' ', string_builder);
                     }
                     push_html_reserved_char(' ', string_builder);
                 }
@@ -250,6 +268,228 @@ pub fn parse_link_title(text: &[char]) -> Option<usize> {
         return Some(offset + 1);
     }
     None
+}
+
+//For purposes of this spec, a scheme is any sequence of 2–32 characters beginning with an ASCII letter and followed by any combination 
+//of ASCII letters, digits, or the symbols plus (“+”), period (“.”), or hyphen (“-”).
+//returns Some(x) if the first x characters of the text are a scheme, otherwise None.
+pub fn parse_scheme(text: &[char]) -> Option<usize> {
+    let mut char_count = 0;
+    while char_count < text.len() && char_count <= 32 && (text[char_count].is_ascii_alphanumeric() || "+.-".contains(text[char_count])) {
+        char_count += 1;
+    }
+    if 2 <= dbg!(char_count) && char_count <= 32 {
+        return Some(char_count);
+    }
+    None
+}
+
+pub fn parse_uri_autolink(text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    if text.len() > 0 && text[offset] == '<'{
+        offset += 1;
+    } else {
+        return None;
+    }
+    if let Some(scheme_char_count) = parse_scheme(&text[offset..]) {
+        if scheme_char_count + 1 < text.len() && text[scheme_char_count + 1] == ':' {
+            offset += scheme_char_count + 2;
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    }
+    while offset < text.len() && !text[offset].is_ascii_control() && !(" \n<>".contains(text[offset])) {
+        offset += 1;
+    }
+    if offset < text.len() && text[offset] == '>' {
+        return Some(offset + 1);
+    }
+    None
+}
+
+//An email address, for these purposes, is anything that matches the non-normative regex from the HTML5 spec:
+// /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?
+// (?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
+pub fn parse_email(text: &[char]) -> Option<usize> {
+    let is_atext_or_dot = |c: char| {
+        c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c)
+    };
+    let mut offset = 0;
+    if text.len() > 0 && text[offset] == '<'{
+        offset += 1;
+    } else {
+        return None;
+    }
+    while offset < text.len() && is_atext_or_dot(text[offset]) {
+        offset += 1;
+    }
+    if offset >= 1 && offset < text.len() && text[offset] == '@' {
+        offset += 1;
+    } else {
+        return None;
+    }
+
+    let parse_label = |text: &[char]| {
+        let mut char_count = 0;
+        if char_count < text.len() && text[char_count].is_ascii_alphanumeric() {
+            char_count += 1; 
+        } else {
+            return None;
+        };
+        let mut last_is_hyphen = false;
+        while char_count < text.len() && char_count <= 63 && text[char_count].is_ascii_alphanumeric() || text[char_count] == '-' {
+            last_is_hyphen = text[char_count] == '-';
+            char_count +=1;
+        }
+        if char_count <=63 && !last_is_hyphen {
+            return Some(char_count);
+        }
+        None
+    };
+
+    if let Some(chars_eaten) = parse_label(&text[offset..]) {
+        offset += chars_eaten
+    } else {
+        return None;
+    }
+    while offset < text.len() && text[offset] == '.' {
+        offset += 1;
+        if let Some(chars_eaten) = parse_label(&text[offset..]) {
+            offset += chars_eaten
+        } else {
+            return None;
+        }
+    }
+    if offset < text.len() && text[offset] == '>' {
+        return Some(offset + 1);
+    }
+    None
+}
+
+pub fn parse_autolink(text: &[char]) -> Option<(usize, bool)> {
+    dbg!("finding autolink!");
+    if let Some(chars_eaten) = parse_uri_autolink(text) {
+        return Some((chars_eaten,false));
+    } else if let Some(chars_eaten) = parse_email(text) {
+        return Some((chars_eaten, true));
+    } else {
+        return  None;
+    }
+
+}
+
+pub fn parse_html_tag(text: &[char]) -> Option<[usize]> {
+
+}
+
+// These functions are called based on lookahead by callers, so opening brackets are consumed
+// closing brackets are not though.
+pub fn parse_opening_tag(text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    if offset >= text.len() || !text[offset].is_ascii_alphabetic() {
+        return None;
+    }
+        offset += 1;
+    while offset < text.len() 
+        && (text[offset] == '-' || text[offset].is_ascii_alphanumeric()) 
+    {
+        offset += 1;
+    }
+
+    while let Some(x) = parse_attribute(&text[offset..]){
+        offset += x;
+    }
+
+    //trailing white space
+    while offset < text.len() && " \t\n".contains(text[offset]) {
+        offset += 1;
+    }
+
+    //optional
+    if offset < text.len() && text[offset] == '/' {
+        offset += 1;
+    }
+
+    if offset < text.len() && text[dbg!(offset)] == '>' {
+        return Some(offset + 1);
+    }
+    None
+}
+pub fn parse_closing_tag(text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    if offset >= text.len() || !text[offset].is_ascii_alphabetic() {
+        return None;
+    }
+        offset += 1;
+    while offset < text.len() 
+        && (text[offset] == '-' || text[offset].is_ascii_alphanumeric()) 
+    {
+        offset += 1;
+    }
+
+    //trailing white space
+    while offset < text.len() && " \t\n".contains(text[offset]) {
+        offset += 1;
+    }
+
+    if offset < text.len() && text[dbg!(offset)] == '>' {
+        return Some(offset + 1);
+    }
+    None
+}
+
+pub fn parse_attribute (text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    //initial_white_space
+    while " \t\n".contains(text[offset]) {
+        offset += 1;
+    }
+    //attribute name
+    //must have one or more space seperating attributes.
+    if offset >= text.len()
+        || offset == 0
+        || !("_:".contains(text[offset]) || text[offset].is_alphabetic())
+    // must start with letter, _, or :
+    {
+        return None;
+    }
+    offset += 1;
+    while text.len() > offset
+        && ("_.:-".contains(text[offset]) || text[offset].is_ascii_alphanumeric())
+    {
+        offset += 1;
+    }
+    let pre_val_offset = offset;
+
+    // attribute value specification.
+    while text.len() > offset && " \t".contains(text[offset]) {
+        offset += 1;
+    }
+    if text.len() <= offset || text[offset] != '=' {
+        return Some(pre_val_offset);
+    }
+    offset += 1;
+    while text.len() > offset && " \t".contains(text[offset]) {
+        offset += 1;
+    }
+    if text.len() <= offset {
+        return Some(pre_val_offset);
+    }
+    let c = text[offset];
+    if "\"\'".contains(c) {
+        offset += 1;
+        while text.len() > offset && text[offset] != c {
+            offset += 1;
+        }
+        offset += 1;
+        return Some(offset);
+    }
+    while text.len() > offset && !" \t\"\'=<>`".contains(text[offset]) {
+        offset += 1;
+    }
+    Some(offset)
 }
 
 
@@ -480,13 +720,10 @@ impl<'a> Iterator for FakeDLLIter<'a> {
 //adjust the code to 2 phases, where we put all delimiters in the stack at once,
 //then go forward through the stack to create
 //
-//BackTick ocde spans, auto links, raw_html >
+//BackTick code spans, auto links, raw_html >
 //brackets in link text >
 //emph markers.
 //
-//this means we create a call stack where our FIRST call is to emphasis,
-//and then encountering a "tighter" binding opener makes us call that. st the
-//"tighter" binding parser returns first!
 pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)> ) -> Vec<InlineContent> {
     // pointer, _, offset_to_next, offset_to_prev
     // dbg!("called parse inline!");
@@ -522,8 +759,8 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
             
         }
         match c {
-
             '\\' => {
+                //TODO: \> can end html or absolute URIs.
                 if let Some((_, '`')) = char_iter.peek() {
                     dbg!("seen a backtick!");
                     add_text_to_stack(&mut delimit_stack,text_begin, char_index);
@@ -569,7 +806,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                         delimit_stack.push_back(char_index + 1, InlineTextComponent::CompletedContent(Hardbreak));
                         text_begin = char_index + 2;
                         char_iter.next();
-                }else                 if let Some((_, c)) = char_iter.peek(){
+                }else if let Some((_, c)) = char_iter.peek(){
                     if c.is_ascii_punctuation() {
                         add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                         //exclude the backslash, include just the punctuation
@@ -679,7 +916,6 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                 delimit_stack.push_back(char_index, BrackClose);
                 text_begin = char_index + 1;
-                //todo!();
             },
             '<' => {
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
@@ -687,89 +923,66 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 text_begin = char_index + 1;
             },
             '>' => {
-                add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                delimit_stack.push_back(char_index, AngleClose);
+                // try to make autolink or HTML tag.
+                // search back for latest <
+                // if fail, go back to earlier < and try again.
+                let mut next_node = delimit_stack.get_first();
+                let mut match_found = None;
+                while let Some(dllnode) = next_node {
+                    if let AngleOpen = dllnode.inline_component {
+                        // try to make it either autolink or Raw HTML
+                        let start_char_index = dllnode.beginning_char_index;
+                        let index_of_matching = dllnode.index_of_this;
+                        if let Some((autolink_offset, is_email)) = parse_autolink(dbg!(&chars[start_char_index..char_index+1])) {
+                            if autolink_offset == char_index + 1 {
+                                match_found = Some((index_of_matching, AutoLink((start_char_index + 1, char_index), is_email)));
+                                break;
+                            }
+                        }
+                    }
+                    next_node = delimit_stack.get_next(dllnode);
+                }
+                if let Some((matching_bracket_index, ic_found)) = match_found {
+                    let begin_char = delimit_stack.get(matching_bracket_index).beginning_char_index;
+                    delimit_stack.delete_stack_above_including(matching_bracket_index);
+                    delimit_stack.push_back(begin_char, CompletedContent(ic_found));
+                } else {
+                    add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                    delimit_stack.push_back(char_index, AngleClose);
+                }
                 text_begin = char_index + 1;
                 //todo!()
             }
-            _ => {
-                let _ = match c {
-                    ']' => Some(BrackClose),
-                    '<' => Some(AngleOpen),
-                    '>' => Some(AngleClose),
-                    _ => None
-                }.map(|dl| {
-                    add_text_to_stack(&mut delimit_stack,text_begin, char_index);
-                    delimit_stack.push_back(char_index, dl)});
+            _ => {()
+                // let _ = match c {
+                //     ']' => Some(BrackClose),
+                //     '<' => Some(AngleOpen),
+                //     '>' => Some(AngleClose),
+                //     _ => None
+                // }.map(|dl| {
+                //     add_text_to_stack(&mut delimit_stack,text_begin, char_index);
+                //     delimit_stack.push_back(char_index, dl)});
             },
         }
 
     }
     add_text_to_stack(&mut delimit_stack, text_begin, chars.len());
 
-    // dbg!(&delimit_stack);
+    // Now we can process links here.
+    // for emph processing, "Set" the stack top to the closing bracket
+    // then reset it once an item has been returned.
+
+    dbg!(&delimit_stack);
     // dbg!(&delimit_stack);
     // now at end of line we look through our stacks
     process_emphasis(None, &mut delimit_stack)
 }
 
-// line beginning spaces are taken in ast_construction phase.
-// fn process_text(start_char_offset: usize, end_char_offset: usize, chars: &[char]) -> Vec<InlineContent> {
-//     let mut out = vec![];
-//     let mut space_count = 0;
-//     let mut current_off = start_char_offset;
-//     let mut line_start = current_off;
-//     while current_off < end_char_offset {
-//         if chars[current_off] == ' ' {
-//             space_count += 1;
-//         } else if chars[current_off] == '\n' {
-//             out.push(TextualContent(line_start, current_off - space_count));
-//             if space_count >= 2 {
-//                 out.push(Hardbreak);
-//             } else {
-//                 out.push(Softbreak);
-//             }
-//             current_off +=1;
-//             space_count = 0;
-//             line_start = current_off;
-//         } else if chars[current_off] == '\\' {
-//             if current_off +1 < end_char_offset {
-//                 if chars[current_off + 1] == '\n'{
-//                     out.push(TextualContent(line_start, current_off - 1));
-//                     out.push(Hardbreak);
-//                     current_off += 2;
-//                     space_count = 0;
-//                     line_start = current_off;
-//                 }
-//                 else {
-//                     current_off +=1;
-//                     space_count = 0;
-//                 }
-//             }
-//                 else {
-//                     current_off +=1;
-//                     space_count = 0;
-//                 }
-//         } else {
-//             current_off += 1;
-//             space_count = 0;
-//         }
-//     }
-//     let final_text_off = if end_char_offset == chars.len() {current_off - space_count} else {
-//         current_off
-//     };
-//     out.push(TextualContent(line_start, final_text_off));
-//     out
-// }
+// This can come next (since links have lower priority than code spans, autolinks, and raw html tags)
+fn process_links(stack: &mut FakeDelimiterDLL) -> Vec<InlineContent> {
 
-// fn remove_delims_in_range(start: usize, end: usize) -> Vec<InlineContent> {
-//
-// }
-//
-// fn make_emph(opener_index_in_stack: usize, closer_index_in_stack_usize,ticks_consumed: usize, possible_children: &mut Vec<(InlineContent, usize)>, context: &mut StackProcessContext) -> (Vec<InlineContent>) {
-//
-// }
-
+    process_emphasis(None, stack)
+}
 // fsub: forward search upper bound
 // boolean tells caller if it contains a link, deepest nested link has priority
 fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) -> Vec<InlineContent>{
@@ -991,95 +1204,6 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
                     current_index_op = stack.get(current_index).index_of_next;
                 }
             }
-
-
-            // {
-            //     if pot_clos && !unds_op_stack.is_empty(){
-            //         let mut unds_op_stack_offset = unds_op_stack.len() - 1; 
-            //         let this_op_bottom = &mut
-            //             if pot_op {
-            //                 openers_bottom_unds_and_opening[total_count % 3]
-            //             } else {
-            //                 openers_bottom_unds_not_opening[total_count % 3]
-            //             };
-            //         let mut matching_dl_index_op = None;
-            //         while unds_op_stack_offset >= 0 && this_op_bottom.map_or(true, |x| unds_op_stack[unds_op_stack_offset].1 > x){
-            //             if let Unds(op_tc, op_used, true, op_pc) = stack.get(unds_op_stack[unds_op_stack_offset].0).inline_component {
-            //                 if (op_pc || pot_op) && (total_count + op_tc % 3 == 0 && !(total_count %3 == 0 && op_tc %3 == 0)) {
-            //                     if unds_op_stack_offset == 0 {
-            //                         break;
-            //                     }
-            //                     unds_op_stack_offset -= 1;
-            //                     continue;
-            //                 } else {
-            //                     matching_dl_index_op = Some(unds_op_stack[unds_op_stack_offset].0);
-            //                     break;
-            //                 }
-            //             } else {
-            //                 panic!("should be some unds here")
-            //             }
-            //         }
-            //         if let Some(matching_dl_index) = matching_dl_index_op {
-            //             let (op_tc, op_used) = match stack.get(matching_dl_index).inline_component {
-            //                 Unds(ot, ou,..) => (ot, ou),
-            //                 _ => panic!("should be Unds here")
-            //             };
-            //             let matching_dl_unconsumed = op_tc - op_used;
-            //             let this_dl_unconsumed = total_count - consumed;
-            //             let is_strong = matching_dl_unconsumed >=2 && this_dl_unconsumed >= 2;
-            //             // turn stack items inside the stack delimiters into actual inline content.
-            //             let mut emph_children: Vec<InlineContent> = vec![];
-            //             let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
-            //             while node_to_eat_index_op.map_or(false, |ntei|stack.get(ntei).beginning_char_index < current_beginning_char_index) {
-            //                 let nte = stack.get_mut(node_to_eat_index_op.unwrap());
-            //                 emph_children.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
-            //                 node_to_eat_index_op = nte.index_of_next;
-            //             }
-            //             stack.replace_inside_stack_range(matching_dl_index, 
-            //                 current_index, stack.get(matching_dl_index).beginning_char_index + op_tc, 
-            //                 CompletedContent(
-            //                     if is_strong {
-            //                         Strong(emph_children)
-            //                     } else {
-            //                         Emph(emph_children)
-            //                     }
-            //                     )
-            //                 );
-            //             let mut used_is_total;
-            //             if let Unds(total, used,..) = &mut stack.get_mut(current_index).inline_component {
-            //                 *used += if is_strong {2} else {1                                    };
-            //                 used_is_total = *used == *total;
-            //             } else {
-            //                 panic!("expect unds");
-            //             }
-            //                 if used_is_total {
-            //                     stack.remove_at_index(current_index);
-            //                 }
-            //             if let Unds(total, used,..) = &mut stack.get_mut(matching_dl_index).inline_component {
-            //                 *used += if is_strong {2} else {1};
-            //                 used_is_total = *used == *total;
-            //             }
-            //             if used_is_total {
-            //                     stack.remove_at_index(matching_dl_index);
-            //                     unds_op_stack.remove(unds_op_stack_offset);
-            //                 }
-            //             continue;
-            //         } else {
-            //             *this_op_bottom = stack.get(current_index).index_of_prev;
-            //             if pot_op {
-            //                 unds_op_stack.push((current_index, stack.get(current_index).beginning_char_index));
-            //             }
-            //             // we don't need a notion of "deleting" non potential_openers Since
-            //             // we track backwards in a different stack than this.
-            //             current_index_op = stack.get(current_index).index_of_next;
-            //         }
-            //     } else if pot_op {
-            //         unds_op_stack.push((current_index, stack.get(current_index).beginning_char_index));
-            //         current_index_op = stack.get(current_index).index_of_next;
-            //     } else {
-            //         current_index_op = stack.get(current_index).index_of_next;
-            //     }
-            // }
             _ =>         current_index_op = stack.dl_stack[current_index].index_of_next,
         }
     }
@@ -1099,5 +1223,6 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
         out.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
         ntei_op = nte.index_of_next;
     }
+    dbg!(&out);
     out
 }
