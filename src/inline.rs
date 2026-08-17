@@ -55,6 +55,8 @@ pub enum InlineContent {
     Image((usize, usize), (usize, usize), Vec<InlineContent>),
     /// href and text, is_email
     AutoLink((usize, usize), bool),
+    /// start, end char index (exclusive)
+    HTMLTag((usize,usize)),
     Code((usize,usize)),
     // for use when swapping memory
     Dummy, 
@@ -100,6 +102,11 @@ impl InlineContent {
                 string_builder.push_str("</a>");
                 
             },
+            HTMLTag((start,end)) => {
+                for ci in *start..*end {
+                    string_builder.push(characters[ci])
+                }
+            }
             Code((start, end)) => {
                 let mut strip_space = false;
                 dbg!(characters);
@@ -278,7 +285,7 @@ pub fn parse_scheme(text: &[char]) -> Option<usize> {
     while char_count < text.len() && char_count <= 32 && (text[char_count].is_ascii_alphanumeric() || "+.-".contains(text[char_count])) {
         char_count += 1;
     }
-    if 2 <= dbg!(char_count) && char_count <= 32 {
+    if 2 <= char_count && char_count <= 32 {
         return Some(char_count);
     }
     None
@@ -369,7 +376,6 @@ pub fn parse_email(text: &[char]) -> Option<usize> {
 }
 
 pub fn parse_autolink(text: &[char]) -> Option<(usize, bool)> {
-    dbg!("finding autolink!");
     if let Some(chars_eaten) = parse_uri_autolink(text) {
         return Some((chars_eaten,false));
     } else if let Some(chars_eaten) = parse_email(text) {
@@ -380,8 +386,66 @@ pub fn parse_autolink(text: &[char]) -> Option<(usize, bool)> {
 
 }
 
-pub fn parse_html_tag(text: &[char]) -> Option<[usize]> {
+pub fn parse_html_tag(text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    if offset >= text.len() || text[offset] != '<' {
+        return None;
+    }
+    offset += 1;
+    if offset < text.len() {
+        match text[offset] {
+            '/' => {
+                if let Some(x) = parse_closing_tag(&text[offset + 1..]) {
+                    offset += 1 + x;
+                } else {
+                    return None;
+                }
+            }
+            '?' => {
+                if let Some(x) = parse_processing_instruction(&text[offset + 1..]) {
+                    offset += x + 1;
+                } else {
+                    return None;
+                }
+            }
+            '!' => {
+                println!("exclamation!");
+                let cdata_str = "[CDATA[";
+                if offset + 2 < text.len() && text[offset + 1] == '-' && text[offset + 2] == '-' {
+                    if let Some(x) = parse_html_comment(&text[offset + 3..]) {
+                        offset += 3 + x;
+                    } else {
+                        return None;
+                    }
+                } else 
+                if offset + cdata_str.len() < text.len() && 
+                    dbg!(&text[offset + 1..offset + 1 + cdata_str.len()]).iter().map(|c|*c).eq(cdata_str.chars()) {
+                        dbg!("CDATA");
+                    if let Some(x) = parse_cdata_section(&text[offset + cdata_str.len()..]) {
+                        offset += cdata_str.len() + x;
+                    } else {
+                        return None;
+                    }
+                } else {
+                    dbg!("parsing declaration!");
+                    if let Some(x) = parse_declaration(&text[offset+1..]) {
+                        offset += 1 + x;
+                    } else {
+                        return None;
+                    }
+                }
+            }
+            _ => {
+                if let Some(x) = parse_opening_tag(&text[offset..]){
+                    offset += x;
+                } else {
+                    return None;
+                }
+            }
 
+        }
+    }
+    Some(offset)
 }
 
 // These functions are called based on lookahead by callers, so opening brackets are consumed
@@ -398,7 +462,7 @@ pub fn parse_opening_tag(text: &[char]) -> Option<usize> {
         offset += 1;
     }
 
-    while let Some(x) = parse_attribute(&text[offset..]){
+    while offset < text.len() && let Some(x) = parse_attribute(&text[offset..]){
         offset += x;
     }
 
@@ -417,6 +481,7 @@ pub fn parse_opening_tag(text: &[char]) -> Option<usize> {
     }
     None
 }
+
 pub fn parse_closing_tag(text: &[char]) -> Option<usize> {
     let mut offset = 0;
     if offset >= text.len() || !text[offset].is_ascii_alphabetic() {
@@ -478,6 +543,7 @@ pub fn parse_attribute (text: &[char]) -> Option<usize> {
         return Some(pre_val_offset);
     }
     let c = text[offset];
+    //quoted attribute 
     if "\"\'".contains(c) {
         offset += 1;
         while text.len() > offset && text[offset] != c {
@@ -486,13 +552,69 @@ pub fn parse_attribute (text: &[char]) -> Option<usize> {
         offset += 1;
         return Some(offset);
     }
-    while text.len() > offset && !" \t\"\'=<>`".contains(text[offset]) {
+    //unquoted attribute
+    while text.len() > offset && !" \t\n\"\'=<>`".contains(text[offset]) {
         offset += 1;
     }
     Some(offset)
 }
 
 
+pub fn parse_html_comment(text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    if offset < text.len() && text[offset] == '>' {
+        return Some(offset+1);
+    }
+    if offset + 1 < text.len() && text[offset] == '-' && text[offset+1] == '>' {
+        return Some(offset+2);
+    }
+    while offset < text.len() {
+        if text[offset] == '-' && offset + 2 < text.len()
+            &&text[offset + 1] == '-' && text[offset+2] == '>' {
+                return Some(offset + 3);
+        }
+        offset+=1;
+    }
+    None
+}
+
+pub fn parse_processing_instruction(text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    while offset < text.len() {
+        if text[offset] == '?' && offset + 1 < text.len()
+            &&text[offset + 1] == '>' {
+                return Some(offset + 2);
+        }
+        offset+=1;
+    }
+    None
+}
+
+pub fn parse_declaration(text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    if offset >= text.len() || !dbg!(text[offset]).is_ascii_alphabetic(){
+        return None;
+    }
+    while offset < text.len() {
+        if text[offset] == '>'{
+            return Some(offset + 1);
+        }
+        offset+=1;
+    }
+    None
+}
+
+pub fn parse_cdata_section(text: &[char]) -> Option<usize> {
+    let mut offset = 0;
+    while offset < text.len() {
+        if text[offset] == ']' && offset + 2 < text.len()
+            &&text[offset + 1] == ']' && text[offset+2] == '>' {
+                return dbg!(Some(offset + 3));
+        }
+        offset+=1;
+    }
+    None
+}
     
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -924,8 +1046,8 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
             },
             '>' => {
                 // try to make autolink or HTML tag.
-                // search back for latest <
-                // if fail, go back to earlier < and try again.
+                // search through opening tags.
+                // if fail, go forward to next < and try again.
                 let mut next_node = delimit_stack.get_first();
                 let mut match_found = None;
                 while let Some(dllnode) = next_node {
@@ -933,16 +1055,21 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                         // try to make it either autolink or Raw HTML
                         let start_char_index = dllnode.beginning_char_index;
                         let index_of_matching = dllnode.index_of_this;
-                        if let Some((autolink_offset, is_email)) = parse_autolink(dbg!(&chars[start_char_index..char_index+1])) {
-                            if autolink_offset == char_index + 1 {
+                        if let Some((chars_eaten, is_email)) = parse_autolink(dbg!(&chars[start_char_index..char_index+1])) {
+                            if start_char_index + chars_eaten == char_index + 1 {
                                 match_found = Some((index_of_matching, AutoLink((start_char_index + 1, char_index), is_email)));
+                                break;
+                            }
+                        } else if let Some(chars_eaten) = dbg!(parse_html_tag(&chars[start_char_index..char_index+1])) {
+                            if dbg!(start_char_index) + chars_eaten == dbg!(char_index + 1) {
+                                match_found = Some((index_of_matching, HTMLTag((start_char_index, char_index + 1))));
                                 break;
                             }
                         }
                     }
                     next_node = delimit_stack.get_next(dllnode);
                 }
-                if let Some((matching_bracket_index, ic_found)) = match_found {
+                if let Some((matching_bracket_index, ic_found)) = dbg!(match_found) {
                     let begin_char = delimit_stack.get(matching_bracket_index).beginning_char_index;
                     delimit_stack.delete_stack_above_including(matching_bracket_index);
                     delimit_stack.push_back(begin_char, CompletedContent(ic_found));
@@ -972,7 +1099,10 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     // for emph processing, "Set" the stack top to the closing bracket
     // then reset it once an item has been returned.
 
-    dbg!(&delimit_stack);
+    // for dl_node in delimit_stack.iter() {
+    //     dbg!(dl_node);
+    // }
+    // dbg!(&delimit_stack);
     // dbg!(&delimit_stack);
     // now at end of line we look through our stacks
     process_emphasis(None, &mut delimit_stack)
@@ -1223,6 +1353,6 @@ fn process_emphasis(stack_bottom:Option<usize>, stack:&mut  FakeDelimiterDLL) ->
         out.push(nte.inline_component.to_inline_content(nte.beginning_char_index));
         ntei_op = nte.index_of_next;
     }
-    dbg!(&out);
+    // dbg!(&out);
     out
 }

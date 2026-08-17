@@ -70,7 +70,6 @@ pub fn markdown_to_html(markdown: &str) -> String {
 
     document.parse_inlines(&lrd_table);
 
-    dbg!(&document);
     // dbg!(&document);
 
     document.to_html()
@@ -1352,9 +1351,9 @@ fn create_new_block_starts(
     // obd is unmodified at this point, since we know we are not in a blank line at  this point,
     // that means that *something* will eventually get added to list item
     let mut added_to_list = None;
-    if let (ListItem(_, _, _), depth) = document.get_general_container(*obd) {
-        added_to_list = Some(depth - 1);
-    }
+    // if let (ListItem(_, _, _), depth) = document.get_general_container(*obd) {
+    //     added_to_list = Some(depth - 1);
+    // }
 
     // next check for thematic break (before we add to list for priority reasons)
     // because it is established non empty, bounds check is not needed
