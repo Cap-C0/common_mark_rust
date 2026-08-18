@@ -93,7 +93,7 @@ impl InlineContent {
                     string_builder.push_str("mailto:");
                 }
                 for ci in *first_char..*last_char {
-                    push_html_reserved_char(characters[ci], string_builder);
+                    push_character_in_uri(characters[ci], string_builder);
                 }
                 string_builder.push_str("\">");
                 for ci in *first_char..*last_char {
@@ -108,7 +108,6 @@ impl InlineContent {
                 }
             }
             Code((start, end)) => {
-                let mut strip_space = false;
                 dbg!(characters);
                 let strip_space = " \n".contains(dbg!(characters[dbg!(*start)])) && " \n".contains(dbg!(characters[dbg!(*end - 1)])); 
                 dbg!(&strip_space); 
@@ -124,7 +123,7 @@ impl InlineContent {
                         push_html_reserved_char(characters[i], string_builder);
                     }
                 }
-                if !entirely_space && strip_space {
+                if entirely_space && strip_space {
                     if *start != *end - 1{
                         push_html_reserved_char(' ', string_builder);
                     }
@@ -882,8 +881,40 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
         }
         match c {
             '\\' => {
-                //TODO: \> can end html or absolute URIs.
-                if let Some((_, '`')) = char_iter.peek() {
+                if let Some((_, '>')) = char_iter.peek() {
+                    let mut next_node = delimit_stack.get_first();
+                    let mut match_found = None;
+                    while let Some(dllnode) = next_node {
+                        if let AngleOpen = dllnode.inline_component {
+                            // try to make it either autolink or Raw HTML
+                            let start_char_index = dllnode.beginning_char_index;
+                            let index_of_matching = dllnode.index_of_this;
+                            if let Some((chars_eaten, is_email)) = parse_autolink(dbg!(&chars[start_char_index..char_index+2])) {
+                                if start_char_index + chars_eaten == char_index + 2 {
+                                    match_found = Some((index_of_matching, AutoLink((start_char_index + 1, char_index + 1), is_email)));
+                                    break;
+                                }
+                            } else if let Some(chars_eaten) = dbg!(parse_html_tag(&chars[start_char_index..char_index+1])) {
+                                if dbg!(start_char_index) + chars_eaten == dbg!(char_index + 2) {
+                                    match_found = Some((index_of_matching, HTMLTag((start_char_index, char_index + 2))));
+                                    break;
+                                }
+                            }
+                        }
+                        next_node = delimit_stack.get_next(dllnode);
+                    }
+                    if let Some((matching_bracket_index, ic_found)) = match_found {
+                        let begin_char = delimit_stack.get(matching_bracket_index).beginning_char_index;
+                        delimit_stack.delete_stack_above_including(matching_bracket_index);
+                        delimit_stack.push_back(begin_char, CompletedContent(ic_found));
+                    } else {
+                        add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                        delimit_stack.push_back(char_index+1, AngleClose);
+                    }
+                    text_begin = char_index + 2;
+                    char_iter.next();
+
+                } else if let Some((_, '`')) = char_iter.peek() {
                     dbg!("seen a backtick!");
                     add_text_to_stack(&mut delimit_stack,text_begin, char_index);
                     char_iter.next();
@@ -1093,7 +1124,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
         }
 
     }
-    add_text_to_stack(&mut delimit_stack, text_begin, chars.len());
+    add_text_to_stack(&mut delimit_stack, text_begin, chars.len() - space_count);
 
     // Now we can process links here.
     // for emph processing, "Set" the stack top to the closing bracket

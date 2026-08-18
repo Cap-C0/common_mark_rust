@@ -18,6 +18,109 @@ impl StaticTrieNode {
     }
 }
 
+pub fn push_character_in_uri(c: char, string_builder: &mut String) {
+    if "!#$&'()*+,/:;=?@-._~".contains(c) || c.is_ascii_alphanumeric() {
+        push_html_reserved_char(c, string_builder);
+    } else {
+        // it needs to be utf 8 encoded.
+        let as_u32 = c as u32;
+        if as_u32 <= 0x007F {
+            let ys = as_u32 >> 4;
+            let zs = as_u32 & 0xF;
+            string_builder.push('%');
+            string_builder.push(std::char::from_digit(ys, 16).unwrap().to_ascii_uppercase());
+            string_builder.push(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase());
+        } else if as_u32 <= 0x07FF {
+            let xs = as_u32 >> 8;
+            let ys = (as_u32 >> 4) & 0xF;
+            let zs = as_u32 & 0xF;
+            string_builder.push('%');
+            string_builder.push(
+                std::char::from_digit(0xb | (xs >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push(
+                std::char::from_digit(((xs & 0x3) << 2) | (ys >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push('%');
+            string_builder.push(
+                std::char::from_digit(0x8 | (ys >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase());
+        } else if as_u32 <= 0xFFFF {
+            let ws = as_u32 >> 12;
+            let xs = (as_u32 >> 8) & 0xF;
+            let ys = (as_u32 >> 4) & 0xF;
+            let zs = as_u32 & 0xF;
+            string_builder.push('%');
+            string_builder.push(std::char::from_digit(0xE, 16).unwrap().to_ascii_uppercase());
+            string_builder.push(std::char::from_digit(ws, 16).unwrap().to_ascii_uppercase());
+            string_builder.push('%');
+            string_builder.push(
+                std::char::from_digit(0xb | (xs >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push(
+                std::char::from_digit(((xs & 0x3) << 2) | (ys >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push('%');
+            string_builder.push(
+                std::char::from_digit(0x8 | (ys >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase());
+        } else if as_u32 <= 0x10FFFF {
+            let us = as_u32 >> 20;
+            let vs = (as_u32 >> 16) & 0xF;
+            let ws = (as_u32 >> 12) & 0xF;
+            let xs = (as_u32 >> 8) & 0xF;
+            let ys = (as_u32 >> 4) & 0xF;
+            let zs = as_u32 & 0xF;
+            string_builder.push('%');
+            string_builder.push(std::char::from_digit(0xF, 16).unwrap().to_ascii_uppercase());
+            string_builder.push(
+                std::char::from_digit(((us & 0x3) << 2) | (vs >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push('%');
+            string_builder.push(
+                std::char::from_digit(0x8 | (vs & 0x3), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push(std::char::from_digit(ws, 16).unwrap().to_ascii_uppercase());
+            string_builder.push('%');
+            string_builder.push(
+                std::char::from_digit(0xb | (xs >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push(
+                std::char::from_digit(((xs & 0x3) << 2) | (ys >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push('%');
+            string_builder.push(
+                std::char::from_digit(0x8 | (ys >> 2), 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            string_builder.push(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase());
+        }
+    }
+}
+
 pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
     let x = match c {
         '<' => "&lt;",
@@ -29,16 +132,20 @@ pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
     string_builder.push_str(x);
 }
 
-pub enum TextType<'a> {
-    // ends with backslash
-    Paragraph(&'a mut bool),
-    InfoString,
-}
-
 pub fn push_chars_with_entities_and_bs(chars: &[char], string_builder: &mut String) {
     let mut char_index = 0;
     while char_index < chars.len() {
-        if chars[char_index] == '&' {
+        if chars[char_index] == '\\' {
+            if char_index + 1 < chars.len() && chars[char_index + 1].is_ascii_punctuation() {
+                push_html_reserved_char(chars[char_index + 1], string_builder);
+            } else {
+                push_html_reserved_char('\\', string_builder);
+                if char_index + 1 < chars.len() {
+                    push_html_reserved_char(chars[char_index + 1], string_builder);
+                }
+            }
+            char_index += 2;
+        } else if chars[char_index] == '&' {
             enum ResultChar<'a> {
                 Single(char),
                 Array(&'a [char]),

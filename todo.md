@@ -12,7 +12,7 @@
   - [x] fix space counting code
     - [x] atx_heading
 - [x] implement correct new line code
-- [ ] unicode property macro
+- [x] unicode property macro
 - [x] create scripts for setting up the repo from a fresh pull
   - [x] curl
     - [x] spec
@@ -24,10 +24,10 @@
   - [x] emphasis.
   - [ ] links
   - [ ] Images
-  - [ ] Autolinks
-  - [ ] html
-  - [ ] soft line break
-  - [ ] hard line breaks
+  - [x] Autolinks
+  - [x] html
+  - [x] soft line break
+  - [x] hard line breaks
 - [x] text stuff
   - [x] entity and numeric char references.
   - [x] backslash escapes.
