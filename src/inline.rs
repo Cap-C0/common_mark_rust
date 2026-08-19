@@ -154,6 +154,12 @@ pub enum LinkType {
 // inline link, reference link, collapsed reference link, shortcut reference link
 // These are the same for links and images. If the caller is looking to parse an image,
 // they just need to set the start to the opening '[' (not the '!')
+// Ok, with new refactors, makes me think it may be better to give the parsers mutable (peekable) iterators instead of
+// text arrays.
+// this way we can clone an iterator, give it to a parser, then on success, reassign the original
+// iter to the new iter we created, and on failure simply throw it away.
+// also will probably make refactoring around strings instead of char arrays easier.
+//TODO: make parsers work with iters insead of char arrays.
 pub fn parse_link(text: &[char]) -> Option<(usize, LinkType)> {
     // first get a link label.
     let offset_after_link_lab;
@@ -541,7 +547,7 @@ pub fn parse_opening_tag(text: &[char]) -> Option<usize> {
         offset += 1;
     }
 
-    if offset < text.len() && text[dbg!(offset)] == '>' {
+    if offset < text.len() && text[offset] == '>' {
         return Some(offset + 1);
     }
     None
@@ -958,6 +964,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     let mut space_count = 0;
     //do the function!
     while let Some((char_index, &c)) = char_iter.next() {
+        dbg!(&c);
         match c {
             ' ' => space_count += 1,
             '\n' => {
@@ -975,89 +982,16 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
         }
         match c {
             '\\' => {
-                if let Some((_, '>')) = char_iter.peek() {
-                    let mut next_node = delimit_stack.get_first();
-                    let mut match_found = None;
-                    while let Some(dllnode) = next_node {
-                        if let AngleOpen = dllnode.inline_component {
-                            // try to make it either autolink or Raw HTML
-                            let start_char_index = dllnode.beginning_char_index;
-                            let index_of_matching = dllnode.index_of_this;
-                            if let Some((chars_eaten, is_email)) = parse_autolink(dbg!(&chars[start_char_index..char_index+2])) {
-                                if start_char_index + chars_eaten == char_index + 2 {
-                                    match_found = Some((index_of_matching, AutoLink((start_char_index + 1, char_index + 1), is_email)));
-                                    break;
-                                }
-                            } else if let Some(chars_eaten) = dbg!(parse_html_tag(&chars[start_char_index..char_index+1])) {
-                                if dbg!(start_char_index) + chars_eaten == dbg!(char_index + 2) {
-                                    match_found = Some((index_of_matching, HTMLTag((start_char_index, char_index + 2))));
-                                    break;
-                                }
-                            }
-                        }
-                        next_node = delimit_stack.get_next(dllnode);
-                    }
-                    if let Some((matching_bracket_index, ic_found)) = match_found {
-                        let begin_char = delimit_stack.get(matching_bracket_index).beginning_char_index;
-                        delimit_stack.delete_stack_above_including(matching_bracket_index);
-                        delimit_stack.push_back(begin_char, CompletedContent(ic_found));
-                    } else {
-                        add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                        delimit_stack.push_back(char_index+1, AngleClose);
-                    }
-                    text_begin = char_index + 2;
-                    char_iter.next();
-
-                } else if let Some((_, '`')) = char_iter.peek() {
-                    dbg!("seen a backtick!");
-                    add_text_to_stack(&mut delimit_stack,text_begin, char_index);
-                    char_iter.next();
-                    // see if that form a codespan.
-                    let mut tick_count = 1;
-                    while char_iter.peek().map_or(false, |&(_, &c)| c == '`') {
-                        tick_count += 1;
-                        char_iter.next();
-                    }
-                    // then look from beginning of stack for a matching tick_count
-                    let mut next_node = delimit_stack.get_first();
-                    while let Some(dllnode) = next_node {
-                        if let BackTick(x) = dllnode.inline_component {
-                            if x == tick_count {
-                                break;
-                            }
-                        }
-                        next_node = delimit_stack.get_next(dllnode);
-                    }
-                    if let Some(matching_node) = next_node {
-                        let starting_char_index = matching_node.beginning_char_index;
-                        let index_of_matching = matching_node.index_of_this;
-                        delimit_stack.delete_stack_above_including(index_of_matching);
-                        delimit_stack.push_back(starting_char_index, CompletedContent(
-                                Code((starting_char_index + tick_count, char_index + 1)) //include
-                                                                                         //the
-                                                                                         //backslash!
-                                ));
-                    } else {
-                        // add just the tick as an escaped char.
-                        delimit_stack.push_back(char_index + 1, InlineTextComponent::TextualContent(1));
-                        // and add the delimit_stack with -1 starting_char
-                        if tick_count > 1 {
-                            delimit_stack.push_back(char_index + 2, BackTick(tick_count - 1));
-                        }
-                    }
-                    text_begin = char_index + 1 + tick_count;
-                    // otherwise its an espaped backtick.
-                } else if let Some((_,'\n')) = char_iter.peek() {
-                        //create a Hardbreak
-                        add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                        delimit_stack.push_back(char_index + 1, InlineTextComponent::CompletedContent(Hardbreak));
-                        text_begin = char_index + 2;
-                        char_iter.next();
-                }else if let Some((_, c)) = char_iter.peek(){
+                if let Some((_, c)) = char_iter.peek(){
                     if c.is_ascii_punctuation() {
                         add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                         //exclude the backslash, include just the punctuation
                         delimit_stack.push_back(char_index + 1, InlineTextComponent::TextualContent(1));
+                        text_begin = char_index + 2;
+                    }
+                    if **c == '\n' {
+                        add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                        delimit_stack.push_back(char_index, CompletedContent(Hardbreak));
                         text_begin = char_index + 2;
                     }
                     char_iter.next();
@@ -1068,35 +1002,37 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 // unfortunately this makes it O(n^1.5) (in case `x``x```x````x...)
                 // fortunately this should make the code a lot simpler.
                 add_text_to_stack(&mut delimit_stack,text_begin, char_index);
-                let mut tick_count = 1;
+                let mut initial_tick_count = 1;
                 while char_iter.peek().map_or(false, |&(_, &c)| c == '`') {
-                    tick_count += 1;
+                    initial_tick_count += 1;
                     char_iter.next();
                 }
-                // then look from beginning of stack for a matching tick_count
-                let mut next_node = delimit_stack.get_first();
-                while let Some(dllnode) = next_node {
-                    if let BackTick(x) = dllnode.inline_component {
-                        if x == tick_count {
-                            break;
+                // then look forward in text for matching tick count
+                let mut matching_tick_count_search_iter = char_iter.clone();
+                let mut code_completed = false;
+                'search_for_matching_tc: while let Some((start_pos,&c)) = matching_tick_count_search_iter.next() {
+                    if c == '`' {
+                        let mut closing_tick_count = 1;
+                        let mut iter_to_become= matching_tick_count_search_iter.clone();
+                        while let Some((_i, '`')) = matching_tick_count_search_iter.next() {
+                            closing_tick_count += 1;
+                            iter_to_become = matching_tick_count_search_iter.clone();
+                        }
+                        if closing_tick_count == initial_tick_count {
+                            char_iter = iter_to_become;
+                            delimit_stack.push_back(char_index, CompletedContent(
+                                    Code((char_index + initial_tick_count, start_pos))
+                                ));
+                            code_completed = true;
+                            text_begin = start_pos + closing_tick_count;
+                            break 'search_for_matching_tc;
                         }
                     }
-                    next_node = delimit_stack.get_next(dllnode);
                 }
-                if let Some(matching_node) = next_node {
-                    let starting_char_index = matching_node.beginning_char_index;
-                    let index_of_matching = matching_node.index_of_this;
-                    dbg!( index_of_matching);
-                    delimit_stack.delete_stack_above_including(index_of_matching);
-                    delimit_stack.push_back(starting_char_index, CompletedContent(
-                            Code((starting_char_index + tick_count, char_index))
-                            ));
+                if !code_completed {
+                    add_text_to_stack(&mut delimit_stack, char_index, char_index + initial_tick_count);
+                    text_begin = char_index + initial_tick_count;
                 }
-                else {
-                    // otherwise if none found, add to stack
-                    delimit_stack.push_back(char_index, BackTick(tick_count));
-                }
-                text_begin = char_index + tick_count;
             },
             '_'|'*' => {
                 add_text_to_stack(&mut delimit_stack, text_begin,char_index);
@@ -1168,46 +1104,72 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 text_begin = char_index + 1;
             },
             '<' => {
+                //eagerly try to make autolink or html,
+                dbg!("trying to make new angle bracket thing");
+                dbg!(&char_index);
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                delimit_stack.push_back(char_index, AngleOpen);
-                text_begin = char_index + 1;
-            },
-            '>' => {
-                // try to make autolink or HTML tag.
-                // search through opening tags.
-                // if fail, go forward to next < and try again.
-                let mut next_node = delimit_stack.get_first();
-                let mut match_found = None;
-                while let Some(dllnode) = next_node {
-                    if let AngleOpen = dllnode.inline_component {
-                        // try to make it either autolink or Raw HTML
-                        let start_char_index = dllnode.beginning_char_index;
-                        let index_of_matching = dllnode.index_of_this;
-                        if let Some((chars_eaten, is_email)) = parse_autolink(dbg!(&chars[start_char_index..char_index+1])) {
-                            if start_char_index + chars_eaten == char_index + 1 {
-                                match_found = Some((index_of_matching, AutoLink((start_char_index + 1, char_index), is_email)));
-                                break;
-                            }
-                        } else if let Some(chars_eaten) = dbg!(parse_html_tag(&chars[start_char_index..char_index+1])) {
-                            if dbg!(start_char_index) + chars_eaten == dbg!(char_index + 1) {
-                                match_found = Some((index_of_matching, HTMLTag((start_char_index, char_index + 1))));
-                                break;
-                            }
-                        }
+                if let Some((chars_eaten, is_email)) = parse_autolink(&chars[char_index..]) {
+                    delimit_stack.push_back(char_index, 
+                        CompletedContent(
+                                AutoLink((char_index + 1, char_index + chars_eaten - 1), is_email)
+                            )
+                        );
+                    for _ in 0..(chars_eaten-1) {
+                        dbg!(char_iter.next());
                     }
-                    next_node = delimit_stack.get_next(dllnode);
-                }
-                if let Some((matching_bracket_index, ic_found)) = dbg!(match_found) {
-                    let begin_char = delimit_stack.get(matching_bracket_index).beginning_char_index;
-                    delimit_stack.delete_stack_above_including(matching_bracket_index);
-                    delimit_stack.push_back(begin_char, CompletedContent(ic_found));
+                    text_begin = char_index + chars_eaten;
+                } else if let Some(chars_eaten) = parse_html_tag(&chars[char_index..]) {
+                    delimit_stack.push_back(char_index, 
+                        CompletedContent(
+                                HTMLTag((char_index, char_index + chars_eaten))
+                            )
+                        );
+                    // minus 1 because chars eaten includes the opening "<"
+                    for _ in 0..(chars_eaten-1) {
+                        char_iter.next();
+                    }
+                    text_begin = char_index + chars_eaten;
                 } else {
-                    add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                    delimit_stack.push_back(char_index, AngleClose);
+                    add_text_to_stack(&mut delimit_stack, char_index, char_index+1);
+                    text_begin = char_index + 1;
                 }
-                text_begin = char_index + 1;
-                //todo!()
-            }
+            },
+            // '>' => {
+            //     // try to make autolink or HTML tag.
+            //     // search through opening tags.
+            //     // if fail, go forward to next < and try again.
+            //     let mut next_node = delimit_stack.get_first();
+            //     let mut match_found = None;
+            //     while let Some(dllnode) = next_node {
+            //         if let AngleOpen = dllnode.inline_component {
+            //             // try to make it either autolink or Raw HTML
+            //             let start_char_index = dllnode.beginning_char_index;
+            //             let index_of_matching = dllnode.index_of_this;
+            //             if let Some((chars_eaten, is_email)) = parse_autolink(dbg!(&chars[start_char_index..char_index+1])) {
+            //                 if start_char_index + chars_eaten == char_index + 1 {
+            //                     match_found = Some((index_of_matching, AutoLink((start_char_index + 1, char_index), is_email)));
+            //                     break;
+            //                 }
+            //             } else if let Some(chars_eaten) = dbg!(parse_html_tag(&chars[start_char_index..char_index+1])) {
+            //                 if dbg!(start_char_index) + chars_eaten == dbg!(char_index + 1) {
+            //                     match_found = Some((index_of_matching, HTMLTag((start_char_index, char_index + 1))));
+            //                     break;
+            //                 }
+            //             }
+            //         }
+            //         next_node = delimit_stack.get_next(dllnode);
+            //     }
+            //     if let Some((matching_bracket_index, ic_found)) = dbg!(match_found) {
+            //         let begin_char = delimit_stack.get(matching_bracket_index).beginning_char_index;
+            //         delimit_stack.delete_stack_above_including(matching_bracket_index);
+            //         delimit_stack.push_back(begin_char, CompletedContent(ic_found));
+            //     } else {
+            //         add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+            //         delimit_stack.push_back(char_index, AngleClose);
+            //     }
+            //     text_begin = char_index + 1;
+            //     //todo!()
+            // }
             _ => {()
                 // let _ = match c {
                 //     ']' => Some(BrackClose),
@@ -1223,81 +1185,81 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     }
     add_text_to_stack(&mut delimit_stack, text_begin, chars.len() - space_count);
 
-    // Now we can process links here.
-    // for emph processing, "Set" the stack top to the closing bracket
-    // then reset it once an item has been returned.
-    // Ok, this is kind of weird, in the sense that links are "low" priority, but they can 
-    // read ahead and "eat" a higher priority structure.
-    // I think completed structures need to "hold on" to the nodes that they consume, for the case
-    // that if they happen to be in the inline link parantheses, they can then be "destructed" in
-    // back into their original parsed 
-    // Actually, this probably doesn't work, if a backtick gets "freed" in the process of a
-    // codespan being broken, it needs to be able to form a new codespan with a possible subsequent
-    // backtick, which this design doesn't allow.
-    // this is giving me the vibe that a call stack may in fact be necessary to keep this O(n) time.
-    let mut current_node_ptr_op = delimit_stack.initial_index;
-    while let Some(current_node_ptr) = current_node_ptr_op {
-        if let AngleClose = delimit_stack.get(current_node_ptr).inline_component {
-            // start from here, look back in stack for LinkOpen or ImgOpen
-            let mut back_search_ptr_op = delimit_stack.get(current_node_ptr).index_of_prev;
-            let mut matching_opener_ptr_op = None;
-            while let Some(back_search_ptr) = back_search_ptr_op {
-                match delimit_stack.get(back_search_ptr).inline_component {
-                    LinkOpen(_) | ImgOpen(_) => {
-                        matching_opener_ptr_op = back_search_ptr_op;
-                        break;
-                    }
-                    _ => back_search_ptr_op = delimit_stack.get(back_search_ptr).index_of_prev,
-                }
-            }
-            if let Some(matching_opener_ptr) = matching_opener_ptr_op {
-                let matching_char_ptr = delimit_stack.get(matching_opener_ptr).beginning_char_index;
-                match delimit_stack.get(matching_opener_ptr).inline_component {
-                    LinkOpen(true) => {
-                        if let Some((chars_eat,lt)) = parse_link(&chars[matching_char_ptr..]) {
-                            match lt {
-                                InlineLink(link_des, link_tit) => {
-                                    // make the inline content from what is inside the link label.
-                                    let stack_bottom = matching_opener_ptr_op;
-                                    // Simulate the top of the stack being the node before the
-                                    // closing bracket
-                                    let real_final_index = delimit_stack.final_index;
-                                    delimit_stack.final_index = delimit_stack.get_index_of_prev(current_node_ptr);
-                                    delimit_stack.get_mut(delimit_stack.get_index_of_prev(current_node_ptr).unwrap()).index_of_next = None;
-                                    let link_text = process_emphasis(stack_bottom, &mut delimit_stack);
-                                    delimit_stack.final_index = real_final_index;
-                                    let point_to_new = delimit_stack.replace_inside_stack_range_including(matching_char_ptr, current_node_ptr, 
-                                        matching_char_ptr, 
-                                        CompletedContent(Link(
-                                                link_des.map_or((0,0), |(x,y)| (matching_char_ptr + x, matching_char_ptr +y)),
-                                                link_tit.map_or((0,0), |(x,y)| (matching_char_ptr + x, matching_char_ptr +y)),
-                                                link_text)));
-
-                                    // now delete all 
-
-                                }
-                                _ => todo!(),
-                            }
-                        }
-                    }
-                    ImgOpen(true) => {
-                        todo!()
-                    }
-                    LinkOpen(false) => {
-                        delimit_stack.get_mut(matching_opener_ptr).inline_component = TextualContent(1);
-                        delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
-                    }
-                    ImgOpen(false) => {
-                        delimit_stack.get_mut(matching_opener_ptr).inline_component = TextualContent(2);
-                        delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
-                    }
-                    _ => panic!("Code above should only match on ImgOpen and LinkOpen")
-                }
-            } else {
-                delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
-            }
-        }
-    }
+    // // Now we can process links here.
+    // // for emph processing, "Set" the stack top to the closing bracket
+    // // then reset it once an item has been returned.
+    // // Ok, this is kind of weird, in the sense that links are "low" priority, but they can 
+    // // read ahead and "eat" a higher priority structure.
+    // // I think completed structures need to "hold on" to the nodes that they consume, for the case
+    // // that if they happen to be in the inline link parantheses, they can then be "destructed" in
+    // // back into their original parsed 
+    // // Actually, this probably doesn't work, if a backtick gets "freed" in the process of a
+    // // codespan being broken, it needs to be able to form a new codespan with a possible subsequent
+    // // backtick, which this design doesn't allow.
+    // // this is giving me the vibe that a call stack may in fact be necessary to keep this O(n) time.
+    // let mut current_node_ptr_op = delimit_stack.initial_index;
+    // while let Some(current_node_ptr) = current_node_ptr_op {
+    //     if let AngleClose = delimit_stack.get(current_node_ptr).inline_component {
+    //         // start from here, look back in stack for LinkOpen or ImgOpen
+    //         let mut back_search_ptr_op = delimit_stack.get(current_node_ptr).index_of_prev;
+    //         let mut matching_opener_ptr_op = None;
+    //         while let Some(back_search_ptr) = back_search_ptr_op {
+    //             match delimit_stack.get(back_search_ptr).inline_component {
+    //                 LinkOpen(_) | ImgOpen(_) => {
+    //                     matching_opener_ptr_op = back_search_ptr_op;
+    //                     break;
+    //                 }
+    //                 _ => back_search_ptr_op = delimit_stack.get(back_search_ptr).index_of_prev,
+    //             }
+    //         }
+    //         if let Some(matching_opener_ptr) = matching_opener_ptr_op {
+    //             let matching_char_ptr = delimit_stack.get(matching_opener_ptr).beginning_char_index;
+    //             match delimit_stack.get(matching_opener_ptr).inline_component {
+    //                 LinkOpen(true) => {
+    //                     if let Some((chars_eat,lt)) = parse_link(&chars[matching_char_ptr..]) {
+    //                         match lt {
+    //                             InlineLink(link_des, link_tit) => {
+    //                                 // make the inline content from what is inside the link label.
+    //                                 let stack_bottom = matching_opener_ptr_op;
+    //                                 // Simulate the top of the stack being the node before the
+    //                                 // closing bracket
+    //                                 let real_final_index = delimit_stack.final_index;
+    //                                 delimit_stack.final_index = delimit_stack.get_index_of_prev(current_node_ptr);
+    //                                 delimit_stack.get_mut(delimit_stack.get_index_of_prev(current_node_ptr).unwrap()).index_of_next = None;
+    //                                 let link_text = process_emphasis(stack_bottom, &mut delimit_stack);
+    //                                 delimit_stack.final_index = real_final_index;
+    //                                 let point_to_new = delimit_stack.replace_inside_stack_range_including(matching_char_ptr, current_node_ptr, 
+    //                                     matching_char_ptr, 
+    //                                     CompletedContent(Link(
+    //                                             link_des.map_or((0,0), |(x,y)| (matching_char_ptr + x, matching_char_ptr +y)),
+    //                                             link_tit.map_or((0,0), |(x,y)| (matching_char_ptr + x, matching_char_ptr +y)),
+    //                                             link_text)));
+    //
+    //                                 // now delete all 
+    //
+    //                             }
+    //                             _ => todo!(),
+    //                         }
+    //                     }
+    //                 }
+    //                 ImgOpen(true) => {
+    //                     todo!()
+    //                 }
+    //                 LinkOpen(false) => {
+    //                     delimit_stack.get_mut(matching_opener_ptr).inline_component = TextualContent(1);
+    //                     delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
+    //                 }
+    //                 ImgOpen(false) => {
+    //                     delimit_stack.get_mut(matching_opener_ptr).inline_component = TextualContent(2);
+    //                     delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
+    //                 }
+    //                 _ => panic!("Code above should only match on ImgOpen and LinkOpen")
+    //             }
+    //         } else {
+    //             delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
+    //         }
+    //     }
+    // }
 
     // for dl_node in delimit_stack.iter() {
     //     dbg!(dl_node);

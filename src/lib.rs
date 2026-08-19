@@ -70,7 +70,7 @@ pub fn markdown_to_html(markdown: &str) -> String {
 
     document.parse_inlines(&lrd_table);
 
-    // dbg!(&document);
+    dbg!(&document);
 
     document.to_html()
 }
