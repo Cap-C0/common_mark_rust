@@ -2,6 +2,7 @@ use serde::de;
 use serde_json::Value::Array;
 
 use crate::inline::InlineTextComponent::*;
+use crate::inline::LinkType::{InlineLink, ReferenceLink};
 use crate::inline::{InlineContent::*};
 use crate::chars::*;
 use core::panic;
@@ -50,6 +51,7 @@ pub enum InlineContent {
     Emph(Vec<InlineContent>),
     Strong(Vec<InlineContent>),
     /// href, title, link_text
+    //TODO: make this work with reference links
     Link((usize, usize), (usize, usize), Vec<InlineContent>),
     /// src, title, link_text
     Image((usize, usize), (usize, usize), Vec<InlineContent>),
@@ -134,6 +136,69 @@ impl InlineContent {
             Dummy => panic!("should not encounter dummy at this point"),
         }
     }
+}
+
+
+pub enum LinkType {
+    /// optional link destination, optional link title.
+    /// the char offsets are given relative to the start of text,
+    /// the caller needs to adjust these to the actual char_ptr in 
+    /// the full chars vector.
+    InlineLink(Option<(usize,usize)>, Option<(usize, usize)>),
+    ReferenceLink,
+    CollapsedReferenceLink,
+    ShortcutReferenceLink,
+
+}
+
+// inline link, reference link, collapsed reference link, shortcut reference link
+// These are the same for links and images. If the caller is looking to parse an image,
+// they just need to set the start to the opening '[' (not the '!')
+pub fn parse_link(text: &[char]) -> Option<(usize, LinkType)> {
+    // first get a link label.
+    let offset_after_link_lab;
+    if let Some(chars_eaten) = parse_link_label(text) {
+        offset_after_link_lab = chars_eaten;
+    } else {
+        return None;
+    }
+    if offset_after_link_lab + 1 < text.len() && text[offset_after_link_lab] == '(' {
+        // try to parse an inline link
+        //optional link destination
+        let mut link_des_out = None;
+        let mut link_title_out = None;
+        let mut current_offset = offset_after_link_lab + 1;
+        if current_offset < text.len() &&
+            let Some((link_des_chars_eaten, in_bracks)) = parse_link_destination(&text[offset_after_link_lab + 1..]) {
+            if in_bracks {
+                link_des_out = Some((current_offset+1, current_offset + link_des_chars_eaten))
+            } else {
+                link_des_out = Some((current_offset, current_offset + link_des_chars_eaten + 1))
+            }
+            
+            //go through whitespace
+            current_offset += link_des_chars_eaten;
+            while current_offset < text.len() && " \t\n".contains(text[current_offset]) {
+                current_offset += 1;
+            }
+
+            // link title is dependent on link destination existing.
+            if current_offset < text.len() &&
+                let Some(link_tit_chars_eaten) = parse_link_title(&text[current_offset..]) {
+                link_title_out = Some((current_offset + 1, current_offset + link_tit_chars_eaten));
+                current_offset += link_tit_chars_eaten;
+            }
+        }
+        if current_offset < text.len() && text[current_offset] == ')' {
+            return Some((current_offset, InlineLink(link_des_out, link_title_out)));
+        } else {
+            return Some((offset_after_link_lab, ReferenceLink));
+        }
+
+    }
+    
+
+    None
 }
 
 
@@ -248,7 +313,8 @@ pub fn parse_link_destination(text: &[char]) -> Option<(usize, bool)> {
 }
 
 
-
+// to get the actual text from the link title return Some(x).
+// it is text[1..x] (gets rid of delimiters)
 pub fn parse_link_title(text: &[char]) -> Option<usize> {
     let mut offset = 0;
     if offset >= text.len() {
@@ -622,7 +688,7 @@ enum InlineTextComponent {
     Asts(usize,usize, bool,bool),
     /// Total_count,Count_consumed, potential_opener, potential_closer
     Unds(usize, usize, bool,bool),
-    ImgOpen,
+    ImgOpen(bool),
     /// active
     LinkOpen(bool),
     BrackClose,
@@ -644,7 +710,7 @@ impl InlineTextComponent {
             BackTick(count) => {
                 TextualContent(count)
             }
-            ImgOpen => TextualContent(2),
+            ImgOpen(_) => TextualContent(2),
             TextualContent(_) | CompletedContent(_) => self,
             _ => TextualContent(1),
         }
@@ -657,7 +723,7 @@ impl InlineTextComponent {
             BackTick(count) | TextualContent(count)=> {
                 Text(char_offset, char_offset + *count)
             }
-            ImgOpen => Text(char_offset, char_offset+ 2),
+            ImgOpen(_) => Text(char_offset, char_offset+ 2),
             CompletedContent(c) => {
                 let mut dummy = Dummy;
                 mem::swap(c, &mut dummy);
@@ -775,6 +841,34 @@ impl FakeDelimiterDLL {
         self.dl_stack[top_node_index].index_of_prev = Some(self.dl_stack.len() - 1);
 
     }
+
+    // returns "pointer" to new node
+    fn replace_inside_stack_range_including(&mut self, bottom_node_index: usize, top_node_index: usize, begin_char_index:usize,
+        item: InlineTextComponent) -> usize {
+        let new_prev = self.get_index_of_prev(bottom_node_index);
+        let new_next = self.get_index_of_next(top_node_index);
+        self.dl_stack.push(DLLnode{
+            beginning_char_index: begin_char_index,
+            inline_component: item,
+            index_of_prev : new_prev,
+            index_of_next : new_next,
+            index_of_this : self.dl_stack.len(),
+        });
+
+        if let Some(prev) = new_prev {
+            self.dl_stack[prev].index_of_next = Some(self.dl_stack.len() - 1);
+        } else {
+            self.initial_index = Some(self.dl_stack.len() - 1)
+        }
+
+        if let Some(next) = new_next {
+            self.dl_stack[next].index_of_prev = Some(self.dl_stack.len() - 1);
+        } else {
+            self.final_index = Some(self.dl_stack.len() - 1)
+        }
+        self.dl_stack.len() - 1
+    }
+
 
     fn delete_stack_above_including(&mut self, node_index: usize) {
         let prev_node_op = self.dl_stack[node_index].index_of_prev.map(|i| &mut self.dl_stack[i]);
@@ -970,6 +1064,9 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 }
             },
             '`' =>{
+                // I think after all that backticks (and angle brackets) have to be resolved eagerly, (search forward) in char array
+                // unfortunately this makes it O(n^1.5) (in case `x``x```x````x...)
+                // fortunately this should make the code a lot simpler.
                 add_text_to_stack(&mut delimit_stack,text_begin, char_index);
                 let mut tick_count = 1;
                 while char_iter.peek().map_or(false, |&(_, &c)| c == '`') {
@@ -1056,7 +1153,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                     if char_iter.peek().map_or(false, |&(_,&d)| d == '[') {
                         add_text_to_stack(&mut delimit_stack,text_begin, char_index);
                         char_iter.next();
-                        delimit_stack.push_back(char_index, ImgOpen);
+                        delimit_stack.push_back(char_index, ImgOpen(true));
                         text_begin = char_index + 2;
                     }
                 }
@@ -1129,6 +1226,78 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     // Now we can process links here.
     // for emph processing, "Set" the stack top to the closing bracket
     // then reset it once an item has been returned.
+    // Ok, this is kind of weird, in the sense that links are "low" priority, but they can 
+    // read ahead and "eat" a higher priority structure.
+    // I think completed structures need to "hold on" to the nodes that they consume, for the case
+    // that if they happen to be in the inline link parantheses, they can then be "destructed" in
+    // back into their original parsed 
+    // Actually, this probably doesn't work, if a backtick gets "freed" in the process of a
+    // codespan being broken, it needs to be able to form a new codespan with a possible subsequent
+    // backtick, which this design doesn't allow.
+    // this is giving me the vibe that a call stack may in fact be necessary to keep this O(n) time.
+    let mut current_node_ptr_op = delimit_stack.initial_index;
+    while let Some(current_node_ptr) = current_node_ptr_op {
+        if let AngleClose = delimit_stack.get(current_node_ptr).inline_component {
+            // start from here, look back in stack for LinkOpen or ImgOpen
+            let mut back_search_ptr_op = delimit_stack.get(current_node_ptr).index_of_prev;
+            let mut matching_opener_ptr_op = None;
+            while let Some(back_search_ptr) = back_search_ptr_op {
+                match delimit_stack.get(back_search_ptr).inline_component {
+                    LinkOpen(_) | ImgOpen(_) => {
+                        matching_opener_ptr_op = back_search_ptr_op;
+                        break;
+                    }
+                    _ => back_search_ptr_op = delimit_stack.get(back_search_ptr).index_of_prev,
+                }
+            }
+            if let Some(matching_opener_ptr) = matching_opener_ptr_op {
+                let matching_char_ptr = delimit_stack.get(matching_opener_ptr).beginning_char_index;
+                match delimit_stack.get(matching_opener_ptr).inline_component {
+                    LinkOpen(true) => {
+                        if let Some((chars_eat,lt)) = parse_link(&chars[matching_char_ptr..]) {
+                            match lt {
+                                InlineLink(link_des, link_tit) => {
+                                    // make the inline content from what is inside the link label.
+                                    let stack_bottom = matching_opener_ptr_op;
+                                    // Simulate the top of the stack being the node before the
+                                    // closing bracket
+                                    let real_final_index = delimit_stack.final_index;
+                                    delimit_stack.final_index = delimit_stack.get_index_of_prev(current_node_ptr);
+                                    delimit_stack.get_mut(delimit_stack.get_index_of_prev(current_node_ptr).unwrap()).index_of_next = None;
+                                    let link_text = process_emphasis(stack_bottom, &mut delimit_stack);
+                                    delimit_stack.final_index = real_final_index;
+                                    let point_to_new = delimit_stack.replace_inside_stack_range_including(matching_char_ptr, current_node_ptr, 
+                                        matching_char_ptr, 
+                                        CompletedContent(Link(
+                                                link_des.map_or((0,0), |(x,y)| (matching_char_ptr + x, matching_char_ptr +y)),
+                                                link_tit.map_or((0,0), |(x,y)| (matching_char_ptr + x, matching_char_ptr +y)),
+                                                link_text)));
+
+                                    // now delete all 
+
+                                }
+                                _ => todo!(),
+                            }
+                        }
+                    }
+                    ImgOpen(true) => {
+                        todo!()
+                    }
+                    LinkOpen(false) => {
+                        delimit_stack.get_mut(matching_opener_ptr).inline_component = TextualContent(1);
+                        delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
+                    }
+                    ImgOpen(false) => {
+                        delimit_stack.get_mut(matching_opener_ptr).inline_component = TextualContent(2);
+                        delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
+                    }
+                    _ => panic!("Code above should only match on ImgOpen and LinkOpen")
+                }
+            } else {
+                delimit_stack.get_mut(current_node_ptr).inline_component = TextualContent(1);
+            }
+        }
+    }
 
     // for dl_node in delimit_stack.iter() {
     //     dbg!(dl_node);
