@@ -1,3 +1,4 @@
+use phf::ordered_set::Iter;
 use serde::de;
 use serde_json::Value::Array;
 
@@ -7,6 +8,7 @@ use crate::inline::{InlineContent::*};
 use crate::chars::*;
 use core::panic;
 use std::arch::aarch64;
+use std::iter::Peekable;
 use std::collections::{HashMap, VecDeque};
 use std::{mem, vec};
 
@@ -16,6 +18,7 @@ include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Inline {
     pub chars: Vec<char>,
+    pub string: String,
     pub content: Vec<InlineContent>,
 }
 
@@ -23,6 +26,7 @@ impl Inline {
     pub fn new(chars: Vec<char>) -> Self {
         Inline{
             chars: chars,
+            string: String::new(),
             content: vec![],
         }
     }
@@ -30,7 +34,7 @@ impl Inline {
     pub fn fill_content(&mut self, lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)>) {
         // dbg!("called_fill_content");
         assert!(self.content.is_empty());
-        self.content = parse_inline(&self.chars, lrd_table)
+        self.content = parse_inline(&self.chars,&self.string, lrd_table)
     }
 
     pub fn to_html(&self, string_builder: &mut String) {
@@ -160,10 +164,10 @@ pub enum LinkType {
 // iter to the new iter we created, and on failure simply throw it away.
 // also will probably make refactoring around strings instead of char arrays easier.
 //TODO: make parsers work with iters insead of char arrays.
-pub fn parse_link(text: &[char]) -> Option<(usize, LinkType)> {
+pub fn parse_link(text: &[char], mut char_iter: &mut Peekable<Iter<(usize, &char)>>) -> Option<(usize, LinkType)> {
     // first get a link label.
     let offset_after_link_lab;
-    if let Some(chars_eaten) = parse_link_label(text) {
+    if let Some(chars_eaten) = parse_link_label(&mut char_iter) {
         offset_after_link_lab = chars_eaten;
     } else {
         return None;
@@ -208,35 +212,68 @@ pub fn parse_link(text: &[char]) -> Option<(usize, LinkType)> {
 }
 
 
-/*
- * returns Some(k) if text matches [.*(c| c != " \t\n")*.*]
- * to get the link label, from the return value, get text[1..k-1]*/
-pub fn parse_link_label(text: &[char]) -> Option<usize> {
-    let mut offset = 0;
-    if text.len() <= offset || text[offset] != '[' {
+pub fn parse_link_label(char_iter: &mut Peekable<Iter<(usize, &char)>>) -> Option<usize> {
+    if let Some((_, '[')) = char_iter.next() {
+        ()
+    } else {
         return None;
     }
-    offset += 1;
     let mut non_space_encountered = false;
 
-    while offset < text.len() && offset <= 1000 && text[offset] != ']' {
-        if !text[offset].is_whitespace() {
+    let mut char_count = 0;
+    let mut last_ci_op = None;
+    while char_count <= 1000 && let Some(&(ci, &c)) = char_iter.next() {
+        if !c.is_whitespace() {
             non_space_encountered = true
         }
-        if text[offset] == '\\' {
-            offset += 1;
-        } else if text[offset] == '[' {
+        if c == '\\' {
+            char_count += 1;
+            char_iter.next();
+        } else if c == '[' {
             return None;
+        } else if c == ']' {
+            last_ci_op = Some(ci);
+
         }
-        offset += 1;
+        char_count += 1;
     }
 
-    if offset < text.len() && offset <= 1000 && non_space_encountered {
-        return Some(offset + 1);
+    if let Some(last_ci) = last_ci_op && char_count <= 1000 && non_space_encountered {
+        return Some(last_ci);
     }
 
     None
 }
+
+/*
+ * returns Some(k) if text matches [.*(c| c != " \t\n")*.*]
+ * to get the link label, from the return value, get text[1..k-1]*/
+// pub fn parse_link_label(text: &[char]) -> Option<usize> {
+//     let mut offset = 0;
+//     if text.len() <= offset || text[offset] != '[' {
+//         return None;
+//     }
+//     offset += 1;
+//     let mut non_space_encountered = false;
+//
+//     while offset < text.len() && offset <= 1000 && text[offset] != ']' {
+//         if !text[offset].is_whitespace() {
+//             non_space_encountered = true
+//         }
+//         if text[offset] == '\\' {
+//             offset += 1;
+//         } else if text[offset] == '[' {
+//             return None;
+//         }
+//         offset += 1;
+//     }
+//
+//     if offset < text.len() && offset <= 1000 && non_space_encountered {
+//         return Some(offset + 1);
+//     }
+//
+//     None
+// }
 
 pub fn normalize_label(label: Vec<char>) -> Vec<char> {
     let mut lab_out = vec![];
@@ -260,63 +297,117 @@ pub fn normalize_label(label: Vec<char>) -> Vec<char> {
     }
     lab_out
 }
-/*
- * returns Some(k, bool) if the first k chars of text matches link definition
- * returns true if the chars are in <> and false if they are not
- */
-pub fn parse_link_destination(text: &[char]) -> Option<(usize, bool)> {
-    let mut offset = 0;
-    if text.len() <= offset {
+
+pub fn parse_link_destination(char_iter: &mut Peekable<Iter<(usize, &char)>>) -> Option<(usize, bool)> {
+    if char_iter.peek().is_none() {
+        return None;
+    }
+    let first_c;
+    if let Some((_, c)) = char_iter.peek() {
+        first_c = **c;
+    } else {
         return None;
     }
 
-    if text[offset] == '<' {
-        offset += 1;
-        while offset < text.len() && text[offset] != '>' {
-            if text[offset] == '\\' {
-                offset += 2;
-            } else if text[offset] == '<' {
+    if first_c == '<'{
+        char_iter.next();
+        while let Some(&(ci, &c)) = char_iter.next() {
+            if c == '\\' {
+                char_iter.next();
+            } else if c == '<' {
                 return None;
-            } else {
-                offset += 1;
+            } else if c == '>'{
+                return Some((ci, true));
             }
         }
-        if offset < text.len() {
-            return Some((offset, true));
-        }
         return None;
     }
 
-    if text[offset].is_whitespace() || text[offset].is_ascii_control() {
+    if first_c.is_whitespace() || first_c.is_ascii_control() {
         return None;
     }
     let mut paren_stack = 0;
-    while offset < text.len()
-        && !(text[offset].is_whitespace())
-        && !(text[offset].is_ascii_control())
+    while let Some(&(ci, &c)) = char_iter.next()
     {
-        if text[offset] == '(' {
+        if c == '(' {
             paren_stack += 1;
-        } else if text[offset] == ')' {
+        } else if c == ')' {
             if paren_stack > 0 {
                 paren_stack -= 1;
             } else {
                 return None;
             }
-        } else if text[offset] == '\\'
-            && text.len() > offset + 1
-            && !text[offset + 1].is_whitespace()
+        } else if c == '\\'
+            && let Some((cipbs, cpbs)) = char_iter.peek()
         {
-            offset += 1
+            if cpbs.is_whitespace() || cpbs.is_ascii_control() {
+                return Some((ci, false));
+            }
+            char_iter.next();
         }
-        offset += 1;
-    }
-
-    if paren_stack == 0 {
-        return Some((offset, false));
+        if c.is_whitespace() || c.is_ascii_control() {
+            return Some((ci, false));
+        }
     }
     None
 }
+/*
+ * returns Some(k, bool) if the first k chars of text matches link definition
+ * returns true if the chars are in <> and false if they are not
+ */
+// pub fn parse_link_destination(text: &[char]) -> Option<(usize, bool)> {
+//     let mut offset = 0;
+//     if text.len() <= offset {
+//         return None;
+//     }
+//
+//     if text[offset] == '<' {
+//         offset += 1;
+//         while offset < text.len() && text[offset] != '>' {
+//             if text[offset] == '\\' {
+//                 offset += 2;
+//             } else if text[offset] == '<' {
+//                 return None;
+//             } else {
+//                 offset += 1;
+//             }
+//         }
+//         if offset < text.len() {
+//             return Some((offset, true));
+//         }
+//         return None;
+//     }
+//
+//     if text[offset].is_whitespace() || text[offset].is_ascii_control() {
+//         return None;
+//     }
+//     let mut paren_stack = 0;
+//     while offset < text.len()
+//         && !(text[offset].is_whitespace())
+//         && !(text[offset].is_ascii_control())
+//     {
+//         if text[offset] == '(' {
+//             paren_stack += 1;
+//         } else if text[offset] == ')' {
+//             if paren_stack > 0 {
+//                 paren_stack -= 1;
+//             } else {
+//                 return None;
+//             }
+//         } else if text[offset] == '\\'
+//             && text.len() > offset + 1
+//             && !text[offset + 1].is_whitespace()
+//         {
+//             offset += 1
+//         }
+//         offset += 1;
+//     }
+//
+//     if paren_stack == 0 {
+//         return Some((offset, false));
+//     }
+//     None
+// }
 
 
 // to get the actual text from the link title return Some(x).
@@ -351,106 +442,213 @@ pub fn parse_link_title(text: &[char]) -> Option<usize> {
 //For purposes of this spec, a scheme is any sequence of 2–32 characters beginning with an ASCII letter and followed by any combination 
 //of ASCII letters, digits, or the symbols plus (“+”), period (“.”), or hyphen (“-”).
 //returns Some(x) if the first x characters of the text are a scheme, otherwise None.
-pub fn parse_scheme(text: &[char]) -> Option<usize> {
+pub fn parse_scheme(char_iter: &mut Peekable<Iter<(usize, &char)>>) -> Option<usize> {
     let mut char_count = 0;
-    while char_count < text.len() && char_count <= 32 && (text[char_count].is_ascii_alphanumeric() || "+.-".contains(text[char_count])) {
-        char_count += 1;
-    }
-    if 2 <= char_count && char_count <= 32 {
-        return Some(char_count);
-    }
+    while char_count <= 32 && let Some(&(ci,c)) = char_iter.peek() {
+        if !c.is_ascii_alphanumeric() && ! "+.-".contains(**c) {
+            if 2 <= char_count {
+                return Some(*ci);
+            }
+            char_iter.next();
+            char_count += 1;
+        }
+    } 
     None
 }
 
-pub fn parse_uri_autolink(text: &[char]) -> Option<usize> {
-    let mut offset = 0;
-    if text.len() > 0 && text[offset] == '<'{
-        offset += 1;
+//For purposes of this spec, a scheme is any sequence of 2–32 characters beginning with an ASCII letter and followed by any combination 
+//of ASCII letters, digits, or the symbols plus (“+”), period (“.”), or hyphen (“-”).
+//returns Some(x) if the first x characters of the text are a scheme, otherwise None.
+// pub fn parse_scheme(text: &[char]) -> Option<usize> {
+//     let mut char_count = 0;
+//     while char_count < text.len() && char_count <= 32 && (text[char_count].is_ascii_alphanumeric() || "+.-".contains(text[char_count])) {
+//         char_count += 1;
+//     }
+//     if 2 <= char_count && char_count <= 32 {
+//         return Some(char_count);
+//     }
+//     None
+// }
+
+pub fn parse_uri_autolink(mut char_iter: &mut Peekable<Iter<(usize, &char)>>) -> Option<usize> {
+    if let Some((_, '<')) = char_iter.next() {
+        ()
     } else {
         return None;
     }
-    if let Some(scheme_char_count) = parse_scheme(&text[offset..]) {
-        if scheme_char_count + 1 < text.len() && text[scheme_char_count + 1] == ':' {
-            offset += scheme_char_count + 2;
+    if let Some(_) = parse_scheme(&mut char_iter) {
+        if let Some((_, ':')) = char_iter.next() {
+            ()
         } else {
             return None;
         }
     } else {
         return None;
     }
-    while offset < text.len() && !text[offset].is_ascii_control() && !(" \n<>".contains(text[offset])) {
-        offset += 1;
-    }
-    if offset < text.len() && text[offset] == '>' {
-        return Some(offset + 1);
+    while let Some(&(ci, c)) = char_iter.next() {
+        if c.is_ascii_control() || " \n<".contains(*c) {
+            return None;
+        }
+        if *c == '>' {
+            return Some(ci);
+        }
     }
     None
 }
 
-//An email address, for these purposes, is anything that matches the non-normative regex from the HTML5 spec:
-// /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?
-// (?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
-pub fn parse_email(text: &[char]) -> Option<usize> {
+// pub fn parse_uri_autolink(text: &[char]) -> Option<usize> {
+//     let mut offset = 0;
+//     if text.len() > 0 && text[offset] == '<'{
+//         offset += 1;
+//     } else {
+//         return None;
+//     }
+//     if let Some(scheme_char_count) = parse_scheme(&text[offset..]) {
+//         if scheme_char_count + 1 < text.len() && text[scheme_char_count + 1] == ':' {
+//             offset += scheme_char_count + 2;
+//         } else {
+//             return None;
+//         }
+//     } else {
+//         return None;
+//     }
+//     while offset < text.len() && !text[offset].is_ascii_control() && !(" \n<>".contains(text[offset])) {
+//         offset += 1;
+//     }
+//     if offset < text.len() && text[offset] == '>' {
+//         return Some(offset + 1);
+//     }
+//     None
+// }
+
+pub fn parse_email(char_iter: &mut Peekable<Iter<(usize, &char)>>) -> Option<usize> {
     let is_atext_or_dot = |c: char| {
         c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c)
     };
-    let mut offset = 0;
-    if text.len() > 0 && text[offset] == '<'{
-        offset += 1;
+    if let Some((_, '<')) = char_iter.next() {
+        ()
     } else {
         return None;
     }
-    while offset < text.len() && is_atext_or_dot(text[offset]) {
-        offset += 1;
+    while let Some((_,c)) = char_iter.peek() && is_atext_or_dot(**c){
+        char_iter.next();
     }
-    if offset >= 1 && offset < text.len() && text[offset] == '@' {
-        offset += 1;
+    if let Some((_, '@')) = char_iter.next(){
+        ()
     } else {
         return None;
     }
 
-    let parse_label = |text: &[char]| {
+    let parse_label = |char_iter: &mut Peekable<Iter<'_, (usize, &char)>>| {
         let mut char_count = 0;
-        if char_count < text.len() && text[char_count].is_ascii_alphanumeric() {
-            char_count += 1; 
+        if let Some((_,c)) = char_iter.next() && c.is_ascii_alphanumeric() {
+            char_count += 1;
         } else {
             return None;
-        };
-        let mut last_is_hyphen = false;
-        while char_count < text.len() && char_count <= 63 && text[char_count].is_ascii_alphanumeric() || text[char_count] == '-' {
-            last_is_hyphen = text[char_count] == '-';
-            char_count +=1;
         }
-        if char_count <=63 && !last_is_hyphen {
-            return Some(char_count);
+        let mut last_is_hyphen = false;
+        while let Some(&(ci, c)) = char_iter.peek() && char_count <= 63 {
+            if c.is_ascii_alphanumeric() || **c == '-' {
+                last_is_hyphen = **c == '-';
+                char_count +=1;
+                char_iter.next();
+            } else {
+                if !last_is_hyphen{
+                    return Some(*ci);
+                } else {
+                    return None;
+                }
+            }
         }
         None
     };
 
-    if let Some(chars_eaten) = parse_label(&text[offset..]) {
-        offset += chars_eaten
+    if let Some(_chars_eaten) = parse_label(char_iter) {
+        ()
     } else {
         return None;
     }
-    while offset < text.len() && text[offset] == '.' {
-        offset += 1;
-        if let Some(chars_eaten) = parse_label(&text[offset..]) {
-            offset += chars_eaten
+    while let Some((_,'.')) = char_iter.peek() {
+        char_iter.next();
+        if let Some(_chars_eaten) = parse_label(char_iter) {
+            ()
         } else {
             return None;
         }
     }
-    if offset < text.len() && text[offset] == '>' {
-        return Some(offset + 1);
+    if let Some((ci_out,'>')) = char_iter.peek(){
+        return Some(*ci_out);
     }
     None
 }
+//An email address, for these purposes, is anything that matches the non-normative regex from the HTML5 spec:
+// /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?
+// (?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
+// pub fn parse_email(text: &[char]) -> Option<usize> {
+//     let is_atext_or_dot = |c: char| {
+//         c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c)
+//     };
+//     let mut offset = 0;
+//     if text.len() > 0 && text[offset] == '<'{
+//         offset += 1;
+//     } else {
+//         return None;
+//     }
+//     while offset < text.len() && is_atext_or_dot(text[offset]) {
+//         offset += 1;
+//     }
+//     if offset >= 1 && offset < text.len() && text[offset] == '@' {
+//         offset += 1;
+//     } else {
+//         return None;
+//     }
+//
+//     let parse_label = |text: &[char]| {
+//         let mut char_count = 0;
+//         if char_count < text.len() && text[char_count].is_ascii_alphanumeric() {
+//             char_count += 1; 
+//         } else {
+//             return None;
+//         };
+//         let mut last_is_hyphen = false;
+//         while char_count < text.len() && char_count <= 63 && text[char_count].is_ascii_alphanumeric() || text[char_count] == '-' {
+//             last_is_hyphen = text[char_count] == '-';
+//             char_count +=1;
+//         }
+//         if char_count <=63 && !last_is_hyphen {
+//             return Some(char_count);
+//         }
+//         None
+//     };
+//
+//     if let Some(chars_eaten) = parse_label(&text[offset..]) {
+//         offset += chars_eaten
+//     } else {
+//         return None;
+//     }
+//     while offset < text.len() && text[offset] == '.' {
+//         offset += 1;
+//         if let Some(chars_eaten) = parse_label(&text[offset..]) {
+//             offset += chars_eaten
+//         } else {
+//             return None;
+//         }
+//     }
+//     if offset < text.len() && text[offset] == '>' {
+//         return Some(offset + 1);
+//     }
+//     None
+// }
 
-pub fn parse_autolink(text: &[char]) -> Option<(usize, bool)> {
-    if let Some(chars_eaten) = parse_uri_autolink(text) {
-        return Some((chars_eaten,false));
-    } else if let Some(chars_eaten) = parse_email(text) {
-        return Some((chars_eaten, true));
+pub fn parse_autolink(char_iter: &mut Peekable<Iter<(usize, &char)>>) -> Option<(usize, bool)> {
+    let mut al_iter = char_iter.clone();
+    let mut em_iter  = char_iter.clone();
+    if let Some(index_of_last_char) = parse_uri_autolink(&mut al_iter) {
+        *char_iter = al_iter;
+        return Some((index_of_last_char,false));
+    } else if let Some(index_of_last_char) = parse_email(&mut em_iter) {
+        *char_iter = em_iter;
+        return Some((index_of_last_char, true));
     } else {
         return  None;
     }
@@ -576,6 +774,69 @@ pub fn parse_closing_tag(text: &[char]) -> Option<usize> {
     None
 }
 
+pub fn parse_attribute (char_iter: &mut Peekable<Iter<(usize, &char)>>) -> Option<usize> {
+    let mut ws_seen = false;
+    //initial_white_space
+    while let Some((_,c)) = char_iter.peek() && " \t\n".contains(**c) {
+        char_iter.next();
+        ws_seen = true;
+    }
+    //attribute name
+    //must have one or more space seperating attributes.
+    let mut pre_val_index;
+    let mut pre_val_iter;
+    if ws_seen && let Some((ci, c)) = char_iter.next() && (c.is_alphabetic() || "_:".contains(**c)) {
+        pre_val_index = *ci;
+        pre_val_iter = char_iter.clone();
+    } else {
+        return None;
+    }
+    while let Some((ci, c)) = char_iter.peek() {
+        if "_.:-".contains(**c) || c.is_ascii_alphanumeric() {
+            char_iter.next();
+            pre_val_index = *ci;
+            pre_val_iter = char_iter.clone();
+        }
+    }
+
+    // attribute value specification.
+
+    while let Some((_,c)) = char_iter.peek() && " \t\n".contains(**c) {
+        char_iter.next();
+    }
+    if let Some((_, '=')) = char_iter.next() {
+        () 
+    } else {
+        *char_iter = pre_val_iter;
+        return Some(pre_val_index);
+    }
+    while let Some((_,c)) = char_iter.peek() && " \t\n".contains(**c) {
+        char_iter.next();
+    }
+    let first_c_of_val;
+    if let Some((_,c)) = char_iter.next() {
+        first_c_of_val = **c;
+    } else {
+        return None;
+    }
+    //quoted attribute 
+    if "\"\'".contains(first_c_of_val) {
+        while let Some((ci, c)) = char_iter.next() {
+            if **c == first_c_of_val {
+                return Some(*ci);
+            }
+        }
+        *char_iter = pre_val_iter;
+        return Some(pre_val_index);
+    }
+    //unquoted attribute
+    let mut ci_out = 0;
+    while let Some((ci, c)) = char_iter.peek() && !" \t\n\"\'=<>`".contains(**c){
+        char_iter.next();
+        ci_out = *ci;
+    }
+    Some(ci_out)
+}
 pub fn parse_attribute (text: &[char]) -> Option<usize> {
     let mut offset = 0;
     //initial_white_space
@@ -742,6 +1003,9 @@ impl InlineTextComponent {
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct DLLnode {
+    //this indexes into the string at the start of a char, the design of the program should
+    //guarantee that this doesnt panic. Namely by only considering usizes that come
+    //immediately from a char_indices() and only subtracting from that offset when the character before that is known.
     beginning_char_index: usize,
     inline_component: InlineTextComponent,
     index_of_prev: Option<usize>,
@@ -945,7 +1209,7 @@ impl<'a> Iterator for FakeDLLIter<'a> {
 //brackets in link text >
 //emph markers.
 //
-pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)> ) -> Vec<InlineContent> {
+pub fn parse_inline(chars: &[char],inline_str: &str, lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)> ) -> Vec<InlineContent> {
     // pointer, _, offset_to_next, offset_to_prev
     // dbg!("called parse inline!");
     let mut delimit_stack = FakeDelimiterDLL{
@@ -953,7 +1217,8 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
         initial_index: None,
         final_index: None
     };
-    let mut char_iter = chars.iter().enumerate().peekable();
+    // let mut char_iter = chars.iter().enumerate().peekable();
+    let mut char_iter = inline_str.char_indices().peekable();
     let mut text_begin = 0;
 
     let mut add_text_to_stack = |sicl: &mut FakeDelimiterDLL, text_begin:usize, text_end: usize| {
@@ -963,7 +1228,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
     };
     let mut space_count = 0;
     //do the function!
-    while let Some((char_index, &c)) = char_iter.next() {
+    while let Some((char_index, c)) = char_iter.next() {
         dbg!(&c);
         match c {
             ' ' => space_count += 1,
@@ -978,11 +1243,10 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 text_begin = char_index + 1;
             }
             _ => space_count = 0,
-            
         }
         match c {
             '\\' => {
-                if let Some((_, c)) = char_iter.peek(){
+                if let Some((_, &c)) = char_iter.peek(){
                     if c.is_ascii_punctuation() {
                         add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                         //exclude the backslash, include just the punctuation
@@ -1099,6 +1363,7 @@ pub fn parse_inline(chars: &[char], lrd_table: &HashMap<Vec<char>, (Vec<char>, V
                 text_begin = char_index + 1;
             }
             ']' => {
+                // do the back search thing.
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                 delimit_stack.push_back(char_index, BrackClose);
                 text_begin = char_index + 1;
