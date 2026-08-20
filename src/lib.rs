@@ -3,11 +3,14 @@ use crate::HTMLEndCondition::*;
 use crate::ListType::*;
 use crate::ast_types::*;
 use crate::inline::*;
+use crate::peekable_char_indices::*;
+
 use std::collections::HashMap;
 use std::mem;
 pub mod ast_types;
 pub mod chars;
 pub mod inline;
+pub mod peekable_char_indices;
 
 pub fn markdown_to_html(markdown: &str) -> String {
     // first split into lines
