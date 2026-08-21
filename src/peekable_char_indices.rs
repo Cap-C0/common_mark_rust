@@ -2,8 +2,8 @@ use std::str::CharIndices;
 
 #[derive(Debug, Clone)]
 pub struct PeekableCharIndices<'a> {
-    iter: CharIndices<'a>,
-    peeked: Option<Option<(usize, char)>>,
+    pub iter: CharIndices<'a>,
+    pub peeked: Option<Option<(usize, char)>>,
 }
 
 impl<'a> Iterator for PeekableCharIndices<'a> {
@@ -33,6 +33,10 @@ impl<'a> PeekableCharIndices<'a> {
         self.peeked.map_or(self.iter.offset(), |op| {
             op.map_or(self.iter.offset(), |(i, _)| i)
         })
+    }
+
+    pub fn is_empty(&mut self) -> bool {
+        self.peek().is_some()
     }
 
     pub fn next_if(&mut self, func: impl Fn((usize, char)) -> bool) -> Option<(usize, char)> {

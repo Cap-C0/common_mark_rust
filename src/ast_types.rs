@@ -347,7 +347,7 @@ impl Block {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ListType {
-    OrderedList(char, usize),
+    OrderedList(char, u32),
     UnorderedList(char),
 }
 
