@@ -1,5 +1,7 @@
 use phf::phf_map;
 
+use crate::peekable_char_indices::{self, PeekableCharIndices};
+
 include!(concat!(env!("OUT_DIR"), "/html_entities.rs"));
 
 // the way we construct this, all tries end in ';'
@@ -132,86 +134,78 @@ pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
     string_builder.push_str(x);
 }
 
-pub fn push_chars_with_entities_and_bs(chars: &[char], string_builder: &mut String) {
-    let mut char_index = 0;
-    while char_index < chars.len() {
-        if chars[char_index] == '\\' {
-            if char_index + 1 < chars.len() && chars[char_index + 1].is_ascii_punctuation() {
-                push_html_reserved_char(chars[char_index + 1], string_builder);
+pub fn push_chars_with_entities_and_bs(str_in: &str, string_builder: &mut String) {
+    let mut peekable_char_indices = PeekableCharIndices::new(str_in.char_indices());
+    while let Some(c) = peekable_char_indices.next() {
+        if c == '\\' {
+            if let Some(punc) = peekable_char_indices.next_if(|c| c.is_ascii_punctuation()) {
+                push_html_reserved_char(punc, string_builder);
             } else {
                 push_html_reserved_char('\\', string_builder);
-                if char_index + 1 < chars.len() {
-                    push_html_reserved_char(chars[char_index + 1], string_builder);
-                }
             }
-            char_index += 2;
-        } else if chars[char_index] == '&' {
+        } else if c == '&' {
             enum ResultChar<'a> {
                 Single(char),
                 Array(&'a [char]),
                 Fail,
             }
-            let amp_index = char_index;
+            let amp_iter = peekable_char_indices.clone();
             let mut char_result = ResultChar::Fail;
-            if char_index + 1 < chars.len() && chars[char_index + 1] == '#' {
-                char_index += 1;
-                if char_index + 1 < chars.len() && "Xx".contains(chars[char_index + 1]) {
+            if peekable_char_indices.next_if_char_eq('#').is_some() {
+                if peekable_char_indices
+                    .next_if(|c_nxt| "Xx".contains(c_nxt))
+                    .is_some()
+                {
                     //hexadecimal
-                    char_index += 2;
                     let mut hex_char_count = 0;
-                    'hex_loop: while hex_char_count < 7 && char_index < chars.len() {
-                        if chars[char_index] == ';' {
+                    let mut hex_acc = 0;
+                    'hex_loop: while hex_char_count < 7
+                        && let Some(c_nxt) = peekable_char_indices.next()
+                    {
+                        if c_nxt == ';' {
                             if hex_char_count == 0 {
                                 break;
                             }
-                            let mut out: u32 = 0;
-                            for i in amp_index + 3..char_index {
-                                out *= 16;
-                                out += chars[i].to_digit(16).unwrap();
-                            }
-                            if out != 0
-                                && let Some(char_out) = char::from_u32(out)
+                            if hex_acc != 0
+                                && let Some(char_out) = char::from_u32(hex_acc)
                             {
                                 char_result = ResultChar::Single(char_out);
                             } else {
                                 char_result = ResultChar::Single(REPLACEMENT_CHARACTER);
                             }
-                            char_index += 1; // for the next iteration.
                             break 'hex_loop;
-                        } else if chars[char_index].is_ascii_hexdigit() {
+                        } else if c_nxt.is_ascii_hexdigit() {
                             hex_char_count += 1;
-                            char_index += 1;
+                            hex_acc *= 16;
+                            hex_acc += c_nxt.to_digit(16).unwrap();
                         } else {
                             break 'hex_loop;
                         }
                     }
                 } else {
                     //decimal
-                    char_index += 1;
                     let mut dec_char_count = 0;
-                    'dec_loop: while dec_char_count < 8 && char_index < chars.len() {
-                        dbg!(&dec_char_count);
-                        if chars[char_index] == ';' {
+                    let mut dec_acc = 0;
+                    'dec_loop: while dec_char_count < 8
+                        && let Some(c_nxt) = peekable_char_indices.next()
+                    {
+                        // dbg!(&dec_char_count);
+                        if c_nxt == ';' {
                             if dec_char_count == 0 {
                                 break 'dec_loop;
                             }
-                            let mut out: u32 = 0;
-                            for i in amp_index + 2..char_index {
-                                out *= 10;
-                                out += chars[i].to_digit(10).unwrap();
-                            }
-                            if out != 0
-                                && let Some(char_out) = char::from_u32(out)
+                            if dec_acc != 0
+                                && let Some(char_out) = char::from_u32(dec_acc)
                             {
                                 char_result = ResultChar::Single(char_out);
                             } else {
                                 char_result = ResultChar::Single(REPLACEMENT_CHARACTER);
                             }
-                            char_index += 1; // for the next iteration.
                             break 'dec_loop;
-                        } else if chars[char_index].is_ascii_digit() {
+                        } else if c_nxt.is_ascii_digit() {
                             dec_char_count += 1;
-                            char_index += 1;
+                            dec_acc *= 10;
+                            dec_acc += c_nxt.to_digit(10).unwrap();
                         } else {
                             break 'dec_loop;
                         }
@@ -220,23 +214,23 @@ pub fn push_chars_with_entities_and_bs(chars: &[char], string_builder: &mut Stri
                 //do the decimal thing
                 // 1-7 digits or
             } else {
-                let prev_trie: &StaticTrieNode = &HTML_ENTITIES;
-                let mut current_trie_op = prev_trie.get_child('&');
-                char_index += 1;
+                let mut current_trie_op = HTML_ENTITIES.get_child('&');
                 'trie_crawl: {
                     while let Some(current_trie) = current_trie_op
-                        && char_index <= chars.len()
+                        && let Some(c_nxt) = peekable_char_indices.next()
                     {
-                        if char_index == chars.len()
-                            || (current_trie.get_child((chars[(char_index)])).is_none())
-                        {
-                            if let Some(ent_chars) = current_trie.get_value() {
-                                char_result = ResultChar::Array(ent_chars);
+                        if c_nxt == ';' {
+                            match current_trie.get_child(c_nxt) {
+                                Some(trie) => {
+                                    if let Some(chars) = trie.get_value() {
+                                        char_result = ResultChar::Array(chars);
+                                    }
+                                }
+                                _ => (),
                             }
                             break 'trie_crawl;
                         }
-                        current_trie_op = current_trie.get_child(chars[char_index]);
-                        char_index += 1;
+                        current_trie_op = current_trie.get_child(c_nxt);
                     }
                 }
                 //char index is already at next char
@@ -249,14 +243,12 @@ pub fn push_chars_with_entities_and_bs(chars: &[char], string_builder: &mut Stri
                 }
                 ResultChar::Single(c) => push_html_reserved_char(c, string_builder),
                 ResultChar::Fail => {
-                    for i in amp_index..char_index {
-                        push_html_reserved_char(chars[i], string_builder);
-                    }
+                    push_html_reserved_char('&', string_builder);
+                    peekable_char_indices = amp_iter;
                 }
             }
         } else {
-            push_html_reserved_char(chars[char_index], string_builder);
-            char_index += 1;
+            push_html_reserved_char(c, string_builder);
         }
     }
 }

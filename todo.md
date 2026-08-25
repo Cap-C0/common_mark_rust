@@ -32,3 +32,8 @@
   - [x] entity and numeric char references.
   - [x] backslash escapes.
   - [x] insecure characters
+
+- [x] refactor char index iterators to only return char (no index)
+- [ ] refactor close_paragraph
+- [ ] refactor html block things
+- [ ] refactor create new blocks

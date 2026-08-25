@@ -18,7 +18,7 @@ include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Inline {
-    pub chars: Vec<char>,
+    // pub chars: Vec<char>,
     pub string: String,
     pub content: Vec<InlineContent>,
 }
@@ -26,21 +26,29 @@ pub struct Inline {
 impl Inline {
     pub fn new(chars: Vec<char>) -> Self {
         Inline {
-            chars: chars,
+            // chars: chars,
             string: String::new(),
             content: vec![],
         }
     }
 
-    pub fn fill_content(&mut self, lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)>) {
+    pub fn with_string(str_in: String) -> Self {
+        Inline {
+            // chars: vec![],
+            string: str_in,
+            content: vec![],
+        }
+    }
+
+    pub fn fill_content(&mut self, lrd_table: &HashMap<String, (String, String)>) {
         // dbg!("called_fill_content");
         assert!(self.content.is_empty());
-        self.content = parse_inline(&self.chars, &self.string, lrd_table)
+        self.content = parse_inline(&self.string, lrd_table)
     }
 
     pub fn to_html(&self, string_builder: &mut String) {
         for ic in &self.content {
-            ic.to_html(&self.chars, string_builder);
+            ic.to_html(&self.string, string_builder);
         }
     }
 }
@@ -70,24 +78,24 @@ pub enum InlineContent {
 }
 
 impl InlineContent {
-    pub fn to_html(&self, characters: &[char], string_builder: &mut String) {
+    pub fn to_html(&self, string_array: &str, string_builder: &mut String) {
         match self {
             Softbreak => string_builder.push_str("\n"),
             Hardbreak => string_builder.push_str("<br />\n"),
             Text(start, end) => {
-                push_chars_with_entities_and_bs(&characters[*start..*end], string_builder);
+                push_chars_with_entities_and_bs(&string_array[*start..*end], string_builder);
             }
             Emph(inline_contents) => {
                 string_builder.push_str("<em>");
                 for ic in inline_contents {
-                    ic.to_html(characters, string_builder);
+                    ic.to_html(string_array, string_builder);
                 }
                 string_builder.push_str("</em>");
             }
             Strong(inline_contents) => {
                 string_builder.push_str("<strong>");
                 for ic in inline_contents {
-                    ic.to_html(characters, string_builder);
+                    ic.to_html(string_array, string_builder);
                 }
                 string_builder.push_str("</strong>");
             }
@@ -98,42 +106,28 @@ impl InlineContent {
                 if *is_email {
                     string_builder.push_str("mailto:");
                 }
-                for ci in *first_char..*last_char {
-                    push_character_in_uri(characters[ci], string_builder);
+                for c in string_array[*first_char..*last_char].chars() {
+                    push_character_in_uri(c, string_builder);
                 }
                 string_builder.push_str("\">");
-                for ci in *first_char..*last_char {
-                    push_html_reserved_char(characters[ci], string_builder);
+                for c in string_array[*first_char..*last_char].chars() {
+                    push_html_reserved_char(c, string_builder);
                 }
                 string_builder.push_str("</a>");
             }
             HTMLTag((start, end)) => {
-                for ci in *start..*end {
-                    string_builder.push(characters[ci])
+                for c in string_array[*start..*end].chars() {
+                    string_builder.push(c);
                 }
             }
             Code((start, end)) => {
-                dbg!(characters);
-                let strip_space = " \n".contains(dbg!(characters[dbg!(*start)]))
-                    && " \n".contains(dbg!(characters[dbg!(*end - 1)]));
-                dbg!(&strip_space);
-                let mut entirely_space = true;
                 string_builder.push_str("<code>");
-                let strip_start = if strip_space { *start + 1 } else { *start };
-                let strip_end = if strip_space { *end - 1 } else { *end };
-                for i in strip_start..strip_end {
-                    if " \n".contains(characters[i]) {
+                for c in string_array[*start..*end].chars() {
+                    if c == '\n' {
                         push_html_reserved_char(' ', string_builder);
                     } else {
-                        entirely_space = false;
-                        push_html_reserved_char(characters[i], string_builder);
+                        push_html_reserved_char(c, string_builder);
                     }
-                }
-                if entirely_space && strip_space {
-                    if *start != *end - 1 {
-                        push_html_reserved_char(' ', string_builder);
-                    }
-                    push_html_reserved_char(' ', string_builder);
                 }
                 string_builder.push_str("</code>");
             }
@@ -162,61 +156,60 @@ pub enum LinkType {
 // iter to the new iter we created, and on failure simply throw it away.
 // also will probably make refactoring around strings instead of char arrays easier.
 //TODO: make parsers work with iters insead of char arrays.
-pub fn parse_link(
-    text: &[char],
-    mut char_iter: &mut PeekableCharIndices,
-) -> Option<(usize, LinkType)> {
-    // first get a link label.
-    let offset_after_link_lab = parse_link_label(char_iter)?;
-    if char_iter.next_if(|(_, c)| c == '(').is_some() {
-        // try to parse an inline link
-        //optional link destination
-        let mut link_des_out = None;
-        let mut link_title_out = None;
-        let mut current_offset = char_iter.offset();
-        if current_offset < text.len()
-            && let Some((link_des_chars_eaten, in_bracks)) = parse_link_destination(char_iter)
-        {
-            if in_bracks {
-                link_des_out = Some((current_offset + 1, current_offset + link_des_chars_eaten))
-            } else {
-                link_des_out = Some((current_offset, current_offset + link_des_chars_eaten + 1))
-            }
+//
 
-            //go through whitespace
-            current_offset += link_des_chars_eaten;
-            while current_offset < text.len() && " \t\n".contains(text[current_offset]) {
-                current_offset += 1;
-            }
-
-            // link title is dependent on link destination existing.
-            if current_offset < text.len()
-                && let Some(link_tit_chars_eaten) = parse_link_title(&text[current_offset..])
-            {
-                link_title_out = Some((current_offset + 1, current_offset + link_tit_chars_eaten));
-                current_offset += link_tit_chars_eaten;
-            }
-        }
-        if current_offset < text.len() && text[current_offset] == ')' {
-            return Some((current_offset, InlineLink(link_des_out, link_title_out)));
-        } else {
-            return Some((offset_after_link_lab, ReferenceLink));
-        }
-    }
-
-    None
-}
+// pub fn parse_link(mut char_iter: &mut PeekableCharIndices) -> Option<(usize, LinkType)> {
+//     // first get a link label.
+//     let offset_after_link_lab = parse_link_label(char_iter)?;
+//     if char_iter.next_if(|c| c == '(').is_some() {
+//         // try to parse an inline link
+//         //optional link destination
+//         let mut link_des_out = None;
+//         let mut link_title_out = None;
+//         let mut current_offset = char_iter.offset();
+//         if current_offset < text.len()
+//             && let Some((link_des_chars_eaten, in_bracks)) = parse_link_destination(char_iter)
+//         {
+//             if in_bracks {
+//                 link_des_out = Some((current_offset + 1, current_offset + link_des_chars_eaten))
+//             } else {
+//                 link_des_out = Some((current_offset, current_offset + link_des_chars_eaten + 1))
+//             }
+//
+//             //go through whitespace
+//             current_offset += link_des_chars_eaten;
+//             while current_offset < text.len() && " \t\n".contains(text[current_offset]) {
+//                 current_offset += 1;
+//             }
+//
+//             // link title is dependent on link destination existing.
+//             if current_offset < text.len()
+//                 && let Some(link_tit_chars_eaten) = parse_link_title(&text[current_offset..])
+//             {
+//                 link_title_out = Some((current_offset + 1, current_offset + link_tit_chars_eaten));
+//                 current_offset += link_tit_chars_eaten;
+//             }
+//         }
+//         if current_offset < text.len() && text[current_offset] == ')' {
+//             return Some((current_offset, InlineLink(link_des_out, link_title_out)));
+//         } else {
+//             return Some((offset_after_link_lab, ReferenceLink));
+//         }
+//     }
+//
+//     None
+// }
 
 pub fn parse_link_label(char_iter: &mut PeekableCharIndices) -> Option<usize> {
-    let (_, c) = char_iter.next()?;
-    if c != '[' {
-        return None;
-    }
+    // let (_, c) = char_iter.next()?;
+    // if c != '[' {
+    //     return None;
+    // }
 
     let mut non_space_encountered = false;
     let mut char_count = 0;
     while char_count <= 1000
-        && let Some((ci, c)) = char_iter.next()
+        && let Some((ci, c)) = char_iter.next_and_index()
     {
         non_space_encountered |= !c.is_whitespace();
         match c {
@@ -241,43 +234,17 @@ pub fn parse_link_label(char_iter: &mut PeekableCharIndices) -> Option<usize> {
 /*
  * returns Some(k) if text matches [.*(c| c != " \t\n")*.*]
  * to get the link label, from the return value, get text[1..k-1]*/
-// pub fn parse_link_label(text: &[char]) -> Option<usize> {
-//     let mut offset = 0;
-//     if text.len() <= offset || text[offset] != '[' {
-//         return None;
-//     }
-//     offset += 1;
-//     let mut non_space_encountered = false;
-//
-//     while offset < text.len() && offset <= 1000 && text[offset] != ']' {
-//         if !text[offset].is_whitespace() {
-//             non_space_encountered = true
-//         }
-//         if text[offset] == '\\' {
-//             offset += 1;
-//         } else if text[offset] == '[' {
-//             return None;
-//         }
-//         offset += 1;
-//     }
-//
-//     if offset < text.len() && offset <= 1000 && non_space_encountered {
-//         return Some(offset + 1);
-//     }
-//
-//     None
-// }
-
-pub fn normalize_label(label: Vec<char>) -> Vec<char> {
-    let mut lab_out = vec![];
-    let stripped_brackets = &label[1..label.len() - 1];
-    let mut char_iter = stripped_brackets.iter().peekable();
+//TODO
+///caller should strip brackets
+pub fn normalize_label(label: &str) -> String {
+    let mut lab_out = String::new();
+    let mut char_iter = label[1..label.len() - 1].chars().peekable();
     //strip leading whitespace
     while char_iter.peek().unwrap().is_whitespace() {
         char_iter.next();
     }
     let mut seen_space = false;
-    while let Some(&c) = char_iter.next() {
+    while let Some(c) = char_iter.next() {
         if " \n\t".contains(c) {
             seen_space = true
         } else {
@@ -292,14 +259,14 @@ pub fn normalize_label(label: Vec<char>) -> Vec<char> {
 }
 
 pub fn parse_link_destination(char_iter: &mut PeekableCharIndices) -> Option<(usize, bool)> {
-    let (_, c_0) = char_iter.peek()?;
+    let c_0 = char_iter.peek()?;
     if c_0.is_whitespace() || c_0.is_ascii_control() {
         return None;
     }
 
     if c_0 == '<' {
         char_iter.next();
-        while let Some((ci, c)) = char_iter.next() {
+        while let Some((ci, c)) = char_iter.next_and_index() {
             if c == '\\' {
                 char_iter.next();
             } else if c == '<' {
@@ -312,7 +279,7 @@ pub fn parse_link_destination(char_iter: &mut PeekableCharIndices) -> Option<(us
     }
 
     let mut paren_stack = 0;
-    while let Some((ci, c)) = char_iter.next() {
+    while let Some((ci, c)) = char_iter.next_and_index() {
         if c == '(' {
             paren_stack += 1;
         } else if c == ')' {
@@ -322,7 +289,7 @@ pub fn parse_link_destination(char_iter: &mut PeekableCharIndices) -> Option<(us
                 return None;
             }
         } else if c == '\\'
-            && let Some((_, cpbs)) = char_iter.peek()
+            && let Some(cpbs) = char_iter.peek()
         {
             if cpbs.is_whitespace() || cpbs.is_ascii_control() {
                 return Some((ci, false));
@@ -335,74 +302,18 @@ pub fn parse_link_destination(char_iter: &mut PeekableCharIndices) -> Option<(us
     }
     None
 }
-/*
- * returns Some(k, bool) if the first k chars of text matches link definition
- * returns true if the chars are in <> and false if they are not
- */
-// pub fn parse_link_destination(text: &[char]) -> Option<(usize, bool)> {
-//     let mut offset = 0;
-//     if text.len() <= offset {
-//         return None;
-//     }
-//
-//     if text[offset] == '<' {
-//         offset += 1;
-//         while offset < text.len() && text[offset] != '>' {
-//             if text[offset] == '\\' {
-//                 offset += 2;
-//             } else if text[offset] == '<' {
-//                 return None;
-//             } else {
-//                 offset += 1;
-//             }
-//         }
-//         if offset < text.len() {
-//             return Some((offset, true));
-//         }
-//         return None;
-//     }
-//
-//     if text[offset].is_whitespace() || text[offset].is_ascii_control() {
-//         return None;
-//     }
-//     let mut paren_stack = 0;
-//     while offset < text.len()
-//         && !(text[offset].is_whitespace())
-//         && !(text[offset].is_ascii_control())
-//     {
-//         if text[offset] == '(' {
-//             paren_stack += 1;
-//         } else if text[offset] == ')' {
-//             if paren_stack > 0 {
-//                 paren_stack -= 1;
-//             } else {
-//                 return None;
-//             }
-//         } else if text[offset] == '\\'
-//             && text.len() > offset + 1
-//             && !text[offset + 1].is_whitespace()
-//         {
-//             offset += 1
-//         }
-//         offset += 1;
-//     }
-//
-//     if paren_stack == 0 {
-//         return Some((offset, false));
-//     }
-//     None
-// }
 
 // to get the actual text from the link title return Some(x).
 // it is text[1..x] (gets rid of delimiters)
 pub fn parse_link_title(char_iter: &mut PeekableCharIndices) -> Option<usize> {
-    let (_, c_0) = char_iter.next()?;
+    let c_0 = char_iter.next()?;
 
     if !"\"\'(".contains(c_0) {
         return None;
     }
+
     let matching_delimiter = if c_0 == '(' { ')' } else { c_0 };
-    while let Some((_, c)) = char_iter.next_if(|(_, c)| c != matching_delimiter) {
+    while let Some(c) = char_iter.next_if(|c| c != matching_delimiter) {
         if c == c_0 {
             return None;
         }
@@ -410,7 +321,7 @@ pub fn parse_link_title(char_iter: &mut PeekableCharIndices) -> Option<usize> {
             char_iter.next();
         }
     }
-    let (_, c_closing) = char_iter.next()?;
+    let c_closing = char_iter.next()?;
     if c_closing == matching_delimiter {
         return Some(char_iter.offset());
     }
@@ -421,10 +332,11 @@ pub fn parse_link_title(char_iter: &mut PeekableCharIndices) -> Option<usize> {
 //of ASCII letters, digits, or the symbols plus (“+”), period (“.”), or hyphen (“-”).
 //returns Some(x) if the first x characters of the text are a scheme, otherwise None.
 pub fn parse_scheme(char_iter: &mut PeekableCharIndices) -> Option<usize> {
-    let mut char_count = 0;
+    char_iter.next_if(|c| c.is_ascii_alphabetic())?;
+    let mut char_count = 1;
     while char_count <= 32
         && char_iter
-            .next_if(|(_, c)| c.is_ascii_alphanumeric() || "+.-".contains(c))
+            .next_if(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
             .is_some()
     {
         char_count += 1;
@@ -435,20 +347,6 @@ pub fn parse_scheme(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     None
 }
 
-//For purposes of this spec, a scheme is any sequence of 2–32 characters beginning with an ASCII letter and followed by any combination
-//of ASCII letters, digits, or the symbols plus (“+”), period (“.”), or hyphen (“-”).
-//returns Some(x) if the first x characters of the text are a scheme, otherwise None.
-// pub fn parse_scheme(text: &[char]) -> Option<usize> {
-//     let mut char_count = 0;
-//     while char_count < text.len() && char_count <= 32 && (text[char_count].is_ascii_alphanumeric() || "+.-".contains(text[char_count])) {
-//         char_count += 1;
-//     }
-//     if 2 <= char_count && char_count <= 32 {
-//         return Some(char_count);
-//     }
-//     None
-// }
-
 pub fn parse_uri_autolink(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     // let (_, c_0) = char_iter.next()?;
     // if c_0 != '<' {
@@ -456,12 +354,12 @@ pub fn parse_uri_autolink(char_iter: &mut PeekableCharIndices) -> Option<usize> 
     // }
 
     parse_scheme(char_iter)?;
-    let (_, c_after_scheme) = char_iter.next()?;
+    let c_after_scheme = char_iter.next()?;
     if c_after_scheme != ':' {
         return None;
     }
 
-    while let Some((ci, c)) = char_iter.next() {
+    while let Some((ci, c)) = char_iter.next_and_index() {
         if c.is_ascii_control() || " \n<".contains(c) {
             return None;
         }
@@ -472,31 +370,6 @@ pub fn parse_uri_autolink(char_iter: &mut PeekableCharIndices) -> Option<usize> 
     None
 }
 
-// pub fn parse_uri_autolink(text: &[char]) -> Option<usize> {
-//     let mut offset = 0;
-//     if text.len() > 0 && text[offset] == '<'{
-//         offset += 1;
-//     } else {
-//         return None;
-//     }
-//     if let Some(scheme_char_count) = parse_scheme(&text[offset..]) {
-//         if scheme_char_count + 1 < text.len() && text[scheme_char_count + 1] == ':' {
-//             offset += scheme_char_count + 2;
-//         } else {
-//             return None;
-//         }
-//     } else {
-//         return None;
-//     }
-//     while offset < text.len() && !text[offset].is_ascii_control() && !(" \n<>".contains(text[offset])) {
-//         offset += 1;
-//     }
-//     if offset < text.len() && text[offset] == '>' {
-//         return Some(offset + 1);
-//     }
-//     None
-// }
-
 //An email address, for these purposes, is anything that matches the non-normative regex from the HTML5 spec:
 // /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?
 // (?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
@@ -506,22 +379,21 @@ pub fn parse_email(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     //     return None;
     // }
 
-    char_iter
-        .consume_while(|(_, c)| c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c));
+    char_iter.consume_while(|c| c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c));
 
-    let (_, c_0) = char_iter.next()?;
+    let c_0 = char_iter.next()?;
     if c_0 != '@' {
         return None;
     }
 
     let parse_label = |char_iter: &mut PeekableCharIndices| {
-        let (_, c_0) = char_iter.next()?;
+        let c_0 = char_iter.next()?;
         if !c_0.is_ascii_alphanumeric() {
             return None;
         }
         let mut char_count = 1;
         let mut last_is_hyphen = false;
-        while let Some((_, c)) = char_iter.next_if(|(_, c)| c.is_ascii_alphanumeric() || c == '-')
+        while let Some(c) = char_iter.next_if(|c| c.is_ascii_alphanumeric() || c == '-')
             && char_count <= 63
         {
             last_is_hyphen = c == '-';
@@ -533,67 +405,13 @@ pub fn parse_email(char_iter: &mut PeekableCharIndices) -> Option<usize> {
         None
     };
     parse_label(char_iter)?;
-    while char_iter.next_if(|(_, c)| c == '.').is_some() {
+    while char_iter.next_if(|c| c == '.').is_some() {
         parse_label(char_iter)?;
     }
 
-    char_iter.next_if(|(_, c)| c == '>').map(|(i, _)| i)
+    let index_out = char_iter.offset();
+    char_iter.next_if(|c| c == '>').map(|_| index_out)
 }
-// pub fn parse_email(text: &[char]) -> Option<usize> {
-//     let is_atext_or_dot = |c: char| {
-//         c.is_ascii_alphanumeric() || ".!#$%&'*+/=?^_`{|}~-".contains(c)
-//     };
-//     let mut offset = 0;
-//     if text.len() > 0 && text[offset] == '<'{
-//         offset += 1;
-//     } else {
-//         return None;
-//     }
-//     while offset < text.len() && is_atext_or_dot(text[offset]) {
-//         offset += 1;
-//     }
-//     if offset >= 1 && offset < text.len() && text[offset] == '@' {
-//         offset += 1;
-//     } else {
-//         return None;
-//     }
-//
-//     let parse_label = |text: &[char]| {
-//         let mut char_count = 0;
-//         if char_count < text.len() && text[char_count].is_ascii_alphanumeric() {
-//             char_count += 1;
-//         } else {
-//             return None;
-//         };
-//         let mut last_is_hyphen = false;
-//         while char_count < text.len() && char_count <= 63 && text[char_count].is_ascii_alphanumeric() || text[char_count] == '-' {
-//             last_is_hyphen = text[char_count] == '-';
-//             char_count +=1;
-//         }
-//         if char_count <=63 && !last_is_hyphen {
-//             return Some(char_count);
-//         }
-//         None
-//     };
-//
-//     if let Some(chars_eaten) = parse_label(&text[offset..]) {
-//         offset += chars_eaten
-//     } else {
-//         return None;
-//     }
-//     while offset < text.len() && text[offset] == '.' {
-//         offset += 1;
-//         if let Some(chars_eaten) = parse_label(&text[offset..]) {
-//             offset += chars_eaten
-//         } else {
-//             return None;
-//         }
-//     }
-//     if offset < text.len() && text[offset] == '>' {
-//         return Some(offset + 1);
-//     }
-//     None
-// }
 
 pub fn parse_autolink(char_iter: &mut PeekableCharIndices) -> Option<(usize, bool)> {
     let mut al_iter = char_iter.clone();
@@ -615,10 +433,10 @@ pub fn parse_html_tag(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     //     return None;
     // }
 
-    return match char_iter.next()?.1 {
+    return match char_iter.next()? {
         '/' => parse_closing_tag(char_iter),
         '?' => parse_processing_instruction(char_iter),
-        '!' => match char_iter.peek()?.1 {
+        '!' => match char_iter.peek()? {
             '-' => parse_html_comment(char_iter),
             '[' => parse_cdata_section(char_iter),
             _ => parse_declaration(char_iter),
@@ -636,67 +454,58 @@ pub fn parse_html_tag(char_iter: &mut PeekableCharIndices) -> Option<usize> {
 // These functions are called based on lookahead by callers, so opening brackets are consumed
 // closing brackets are not though.
 pub fn parse_opening_tag(char_iter: &mut PeekableCharIndices) -> Option<usize> {
-    // this check is made by caller
-    // let (_,c) = char_iter.next()?;
-    // if !c.is_ascii_alphabetic() {return None;}
-    char_iter.consume_while(|(_, c)| c.is_ascii_alphanumeric() || c == '-');
+    char_iter.consume_while(|c| c.is_ascii_alphanumeric() || c == '-');
 
     while parse_attribute(char_iter).is_some() {}
 
-    char_iter.consume_while(|(_, c)| " \t\n".contains(c));
+    char_iter.consume_while(|c| " \t\n".contains(c));
 
-    char_iter.next_if(|(_, c)| c == '/');
+    //optional
+    char_iter.next_if_char_eq('/');
 
-    char_iter
-        .next_if(|(_, c)| c == '>')
-        .map(|_| char_iter.offset())
+    // Not sure if this is called lazily or not
+    char_iter.next_if_char_eq('>').map(|_| char_iter.offset())
 }
 
 pub fn parse_closing_tag(char_iter: &mut PeekableCharIndices) -> Option<usize> {
-    let (_, c_0) = char_iter.next()?;
-    if !c_0.is_ascii_alphabetic() {
-        return None;
-    }
-    char_iter.consume_while(|(_, c)| c.is_ascii_alphanumeric() || c == '-');
+    char_iter.consume_while(|c| c.is_ascii_alphanumeric() || c == '-');
 
-    char_iter.consume_while(|(_, c)| " \t\n".contains(c));
+    char_iter.consume_while(|c| " \t\n".contains(c));
 
-    char_iter
-        .next_if(|(_, c)| c == '>')
-        .map(|_| char_iter.offset())
+    char_iter.next_if(|c| c == '>').map(|_| char_iter.offset())
 }
 
 pub fn parse_attribute(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     let mut ws_seen = false;
     //initial_white_space
-    while char_iter.next_if(|(_, c)| " \t\n".contains(c)).is_some() {
+    while char_iter.next_if(|c| " \t\n".contains(c)).is_some() {
         ws_seen = true;
     }
     //attribute name
     //must have one or more space seperating attributes.
-    let (_, c_post_ws) = char_iter.next()?;
+    let c_post_ws = char_iter.next()?;
     if !ws_seen && !(c_post_ws.is_ascii_alphabetic() || "_:".contains(c_post_ws)) {
         return None;
     }
 
-    char_iter.consume_while(|(_, c)| "_.:-".contains(c) || c.is_ascii_alphanumeric());
+    char_iter.consume_while(|c| "_.:-".contains(c) || c.is_ascii_alphanumeric());
     //state of iter after reading name
     let pre_val_iter = char_iter.clone();
 
     // attribute value specification.
-    char_iter.consume_while(|(_, c)| " \t\n".contains(c));
+    char_iter.consume_while(|c| " \t\n".contains(c));
 
-    if !char_iter.next_if(|(_, c)| c == '=').is_some() {
+    if !char_iter.next_if(|c| c == '=').is_some() {
         *char_iter = pre_val_iter;
         return Some(char_iter.offset());
     }
 
     // post equals ws
-    char_iter.consume_while(|(_, c)| " \t\n".contains(c));
-    let (_, first_c_of_val) = char_iter.next()?;
+    char_iter.consume_while(|c| " \t\n".contains(c));
+    let first_c_of_val = char_iter.next()?;
     //quoted attribute
     if "\"\'".contains(first_c_of_val) {
-        while let Some((ci, c)) = char_iter.next() {
+        while let Some((ci, c)) = char_iter.next_and_index() {
             if c == first_c_of_val {
                 return Some(ci);
             }
@@ -705,90 +514,39 @@ pub fn parse_attribute(char_iter: &mut PeekableCharIndices) -> Option<usize> {
         return Some(char_iter.offset());
     }
     //unquoted attribute
-    while char_iter
-        .peek()
-        .is_some_and(|(_, c)| !" \t\n\"\'=<>`".contains(c))
-    {
-        char_iter.next();
-    }
+    char_iter.consume_while(|c| !" \t\n\"\'=<>`".contains(c));
+    // while char_iter
+    //     .peek()
+    //     .is_some_and(|c| !" \t\n\"\'=<>`".contains(c))
+    // {
+    //     char_iter.next();
+    // }
     Some(char_iter.offset())
 }
-// pub fn parse_attribute (text: &[char]) -> Option<usize> {
-//     let mut offset = 0;
-//     //initial_white_space
-//     while " \t\n".contains(text[offset]) {
-//         offset += 1;
-//     }
-//     //attribute name
-//     //must have one or more space seperating attributes.
-//     if offset >= text.len()
-//         || offset == 0
-//         || !("_:".contains(text[offset]) || text[offset].is_alphabetic())
-//     // must start with letter, _, or :
-//     {
-//         return None;
-//     }
-//     offset += 1;
-//     while text.len() > offset
-//         && ("_.:-".contains(text[offset]) || text[offset].is_ascii_alphanumeric())
-//     {
-//         offset += 1;
-//     }
-//     let pre_val_offset = offset;
-//
-//     // attribute value specification.
-//     while text.len() > offset && " \t".contains(text[offset]) {
-//         offset += 1;
-//     }
-//     if text.len() <= offset || text[offset] != '=' {
-//         return Some(pre_val_offset);
-//     }
-//     offset += 1;
-//     while text.len() > offset && " \t".contains(text[offset]) {
-//         offset += 1;
-//     }
-//     if text.len() <= offset {
-//         return Some(pre_val_offset);
-//     }
-//     let c = text[offset];
-//     //quoted attribute
-//     if "\"\'".contains(c) {
-//         offset += 1;
-//         while text.len() > offset && text[offset] != c {
-//             offset += 1;
-//         }
-//         offset += 1;
-//         return Some(offset);
-//     }
-//     //unquoted attribute
-//     while text.len() > offset && !" \t\n\"\'=<>`".contains(text[offset]) {
-//         offset += 1;
-//     }
-//     Some(offset)
-// }
 
 pub fn parse_html_comment(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     //consume the opening "--"
-    let (_, c_0) = char_iter.next()?;
-    let (_, c_1) = char_iter.next()?;
+    let c_0 = char_iter.next()?;
+    let c_1 = char_iter.next()?;
     if c_0 != '-' || c_1 != '-' {
         return None;
     }
 
     let mut dash_count = 0;
-    let (index_0, char_0) = char_iter.next()?;
+    let (index_0, char_0) = char_iter.next_and_index()?;
     if char_0 == '>' {
         return Some(index_0);
     } else if char_0 == '-' {
         dash_count += 1;
-        let (_, char_1) = char_iter.next()?;
+        let char_1 = char_iter.next()?;
         if char_1 == '>' {
             return Some(char_iter.offset());
         } else if char_1 == '-' {
             dash_count += 1;
         }
     }
-    while let Some((_, c)) = char_iter.next() {
+
+    while let Some(c) = char_iter.next() {
         if c == '-' {
             dash_count += 1;
         } else if c == '>' && dash_count >= 2 {
@@ -802,7 +560,7 @@ pub fn parse_html_comment(char_iter: &mut PeekableCharIndices) -> Option<usize> 
 
 pub fn parse_processing_instruction(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     let mut seen_qm = false;
-    while let Some((index, c)) = char_iter.next() {
+    while let Some((index, c)) = char_iter.next_and_index() {
         if c == '?' {
             seen_qm = true;
         } else if c == '>' && seen_qm {
@@ -815,11 +573,11 @@ pub fn parse_processing_instruction(char_iter: &mut PeekableCharIndices) -> Opti
 }
 
 pub fn parse_declaration(char_iter: &mut PeekableCharIndices) -> Option<usize> {
-    let (_, char_0) = char_iter.next()?;
+    let char_0 = char_iter.next()?;
     if !char_0.is_ascii_alphabetic() {
         return None;
     }
-    while let Some((index, c)) = char_iter.next() {
+    while let Some((index, c)) = char_iter.next_and_index() {
         if c == '>' {
             return Some(index);
         }
@@ -830,14 +588,15 @@ pub fn parse_declaration(char_iter: &mut PeekableCharIndices) -> Option<usize> {
 pub fn parse_cdata_section(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     // also do the "CDATA[" string recognition.
     let to_match = "[CDATA[";
-    while let Some(((_, c_in), c)) = char_iter.take(to_match.len()).zip(to_match.chars()).next() {
-        if c != c_in {
+    while let Some((c_in, c_to_match)) = char_iter.take(to_match.len()).zip(to_match.chars()).next()
+    {
+        if c_in != c_to_match {
             return None;
         }
     }
 
     let mut r_brack_count = 0;
-    while let Some((current_ind, c)) = char_iter.next() {
+    while let Some((current_ind, c)) = char_iter.next_and_index() {
         if c == ']' {
             r_brack_count += 1;
         } else if c == '>' && r_brack_count >= 2 {
@@ -1131,9 +890,8 @@ impl<'a> Iterator for FakeDLLIter<'a> {
 // Indentation and underlying structures like quotes (>) make this a bit harder to think about
 // for now, I will be cloning the strings from the source string into the Inline structs.
 pub fn parse_inline(
-    chars: &[char],
     inline_str: &str,
-    lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)>,
+    lrd_table: &HashMap<String, (String, String)>,
 ) -> Vec<InlineContent> {
     // pointer, _, offset_to_next, offset_to_prev
     // dbg!("called parse inline!");
@@ -1158,7 +916,7 @@ pub fn parse_inline(
     let mut preceding_char = ' '; // for purposes of emphasis delimeter types (beginning counts as
     // whitespace)
     //do the function!
-    while let Some((char_index, c)) = char_iter.next() {
+    while let Some((char_index, c)) = char_iter.next_and_index() {
         match c {
             ' ' => space_count += 1,
             '\n' => {
@@ -1178,7 +936,7 @@ pub fn parse_inline(
         }
         match c {
             '\\' => {
-                if let Some((_, c)) = char_iter.peek() {
+                if let Some(c) = char_iter.peek() {
                     if c.is_ascii_punctuation() {
                         add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                         //exclude the backslash, include just the punctuation
@@ -1198,6 +956,7 @@ pub fn parse_inline(
             }
             '`' => {
                 // since the backticks are ascii, they are one byte and safe to do string offset math on throughout
+                // TODO: space stripping.
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
 
                 char_iter.consume_while_char_eq('`');
@@ -1205,8 +964,14 @@ pub fn parse_inline(
 
                 let mut matching_tick_count_search_iter = char_iter.clone();
                 let mut code_completed = false;
+                let starts_with_space = match matching_tick_count_search_iter.peek() {
+                    Some(' ') | Some('\n') => true,
+                    _ => false,
+                };
+                let mut entirely_space = starts_with_space;
+                let mut last_is_space = starts_with_space;
                 'search_for_matching_tc: while let Some((start_pos, c)) =
-                    matching_tick_count_search_iter.next()
+                    matching_tick_count_search_iter.next_and_index()
                 {
                     if c == '`' {
                         matching_tick_count_search_iter.consume_while_char_eq('`');
@@ -1215,17 +980,28 @@ pub fn parse_inline(
 
                         if closing_tick_count == initial_tick_count {
                             char_iter = matching_tick_count_search_iter;
+                            let remove_space =
+                                if starts_with_space && last_is_space && !entirely_space {
+                                    1
+                                } else {
+                                    0
+                                };
                             delimit_stack.push_back(
                                 char_index,
                                 CompletedContent(Code((
-                                    char_index + initial_tick_count,
-                                    start_pos,
+                                    char_index + initial_tick_count + remove_space,
+                                    start_pos - remove_space,
                                 ))),
                             );
                             code_completed = true;
                             text_begin = start_pos + closing_tick_count;
                             break 'search_for_matching_tc;
                         }
+                    } else if " \n".contains(c) {
+                        last_is_space = true;
+                    } else {
+                        last_is_space = false;
+                        entirely_space = false;
                     }
                 }
                 if !code_completed {
@@ -1248,7 +1024,7 @@ pub fn parse_inline(
                 let dc = char_iter.offset() - char_index;
 
                 //for these purposes, end and beginning of line count as whitespace.
-                let following_char = char_iter.peek().unwrap_or((0, ' ')).1;
+                let following_char = char_iter.peek().unwrap_or(' ');
 
                 let punc_preceded =
                     preceding_char.is_unicode_punctuation() || preceding_char.is_unicode_symbol();
@@ -1337,7 +1113,11 @@ pub fn parse_inline(
             }
         }
     }
-    add_text_to_stack(&mut delimit_stack, text_begin, chars.len() - space_count);
+    add_text_to_stack(
+        &mut delimit_stack,
+        text_begin,
+        inline_str.len() - space_count,
+    );
 
     process_emphasis(None, &mut delimit_stack)
 }

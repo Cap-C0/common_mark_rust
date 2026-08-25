@@ -17,12 +17,12 @@ pub enum Block {
     Heading(Inline, usize),
     Paragraph(Inline, bool),
     ThematicBreak,
-    ///
-    IndentedCodeBlock(Vec<char>, Vec<Vec<char>>), // unrealized blank lines
+    /// actualy chars, unrealized blanks
+    IndentedCodeBlock(String, String), // unrealized blank lines
     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
-    FencedCodeBlock(Vec<char>, bool, char, Vec<char>, usize, usize),
+    FencedCodeBlock(String, bool, char, String, usize, usize),
     /// (characters,is_open, end_condition, )
-    HTMLBlock(Vec<char>, bool, HTMLEndCondition),
+    HTMLBlock(String, bool, HTMLEndCondition),
 }
 
 impl Block {
@@ -89,7 +89,7 @@ impl Block {
         }
     }
 
-    pub fn parse_inlines(&mut self, lrd_table: &HashMap<Vec<char>, (Vec<char>, Vec<char>)>) {
+    pub fn parse_inlines(&mut self, lrd_table: &HashMap<String, (String, String)>) {
         match self {
             Document(blocks) | BlockQuote(blocks, _) | List(blocks, ..) | ListItem(blocks, ..) => {
                 for b in blocks {
@@ -289,14 +289,14 @@ impl Block {
                 string_builder.push_str(&format!("</h{}>\n", h));
             }
             Paragraph(il, _) => {
-                if !in_tight_list && il.chars.len() > 0 {
+                if !in_tight_list && il.string.len() > 0 {
                     if string_builder.len() > 0 && !string_builder.ends_with('\n') {
                         string_builder.push('\n');
                     }
                     string_builder.push_str("<p>");
                 }
                 il.to_html(string_builder);
-                if !in_tight_list && il.chars.len() > 0 {
+                if !in_tight_list && il.string.len() > 0 {
                     string_builder.push_str("</p>\n");
                 }
             }
@@ -306,17 +306,17 @@ impl Block {
                 }
                 string_builder.push_str("<hr />\n")
             }
-            IndentedCodeBlock(items, _items1) => {
+            IndentedCodeBlock(string, _items1) => {
                 if string_builder.len() > 0 && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 string_builder.push_str("<pre><code>");
-                for c in items {
-                    push_html_reserved_char(*c, string_builder);
+                for c in string.chars() {
+                    push_html_reserved_char(c, string_builder);
                 }
                 string_builder.push_str("\n</code></pre>\n");
             }
-            FencedCodeBlock(items, _, _, lang_hint, _, _) => {
+            FencedCodeBlock(string, _, _, lang_hint, _, _) => {
                 if string_builder.len() > 0 && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
@@ -327,17 +327,17 @@ impl Block {
                     string_builder.push('\"');
                 }
                 string_builder.push('>');
-                for c in items {
-                    push_html_reserved_char(*c, string_builder);
+                for c in string.chars() {
+                    push_html_reserved_char(c, string_builder);
                 }
                 string_builder.push_str("</code></pre>\n");
             }
-            HTMLBlock(items, ..) => {
+            HTMLBlock(string, ..) => {
                 if string_builder.len() > 0 && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
-                for c in items {
-                    string_builder.push(*c);
+                for c in string.chars() {
+                    string_builder.push(c);
                 }
                 string_builder.push('\n');
             }
@@ -368,7 +368,7 @@ impl ListType {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum HTMLEndCondition {
-    ContainsStrings(Vec<Vec<char>>),
+    ContainsStrings(Vec<String>),
     BlankLine,
 }
 
