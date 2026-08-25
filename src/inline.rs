@@ -1078,7 +1078,7 @@ pub fn parse_inline(
             }
             '<' => {
                 //eagerly try to make autolink or html,
-                dbg!("trying to make new angle bracket thing");
+                // dbg!("trying to make new angle bracket thing");
                 dbg!(&char_index);
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                 let mut autolink_iter = char_iter.clone();

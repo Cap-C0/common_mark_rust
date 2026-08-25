@@ -80,7 +80,7 @@ impl<'a> Iterator for LineState<'a> {
             self.space_from_last_structure = 0;
             self.effective_column_number += 1;
         }
-        dbg!(&self);
+        // dbg!(&self);
         Some(out)
     }
 }
@@ -127,9 +127,9 @@ impl<'a> LineState<'a> {
     }
 
     fn next_if_helper(&mut self, func: &impl Fn(char) -> bool) -> Option<char> {
-        match dbg!(self.peek()) {
+        match (self.peek()) {
             Some(tup) => {
-                if dbg!(func(tup)) {
+                if (func(tup)) {
                     return self.next();
                 } else {
                     None
@@ -148,10 +148,10 @@ impl<'a> LineState<'a> {
     }
 
     fn consume_indent_until_sfls_ge(&mut self, n: usize) {
-        dbg!("called consume_indent");
-        while dbg!(self.space_from_last_structure) < n
-            && self.next_if(|c| " \t".contains(c)).is_some()
-        {}
+        // dbg!("called consume_indent");
+        while (self.space_from_last_structure) < n && self.next_if(|c| " \t".contains(c)).is_some()
+        {
+        }
     }
 
     fn is_blank_line(&self) -> bool {
@@ -184,7 +184,9 @@ mod test_ls {
 }
 
 pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
-    let mut lines = markdown.split('\n').peekable();
+    let mut lines_list: Vec<&str> = markdown.split('\n').collect();
+    lines_list.pop();
+    let mut lines = lines_list.iter().peekable();
 
     let lrd_table = HashMap::new();
     let document = Document(vec![]);
@@ -210,7 +212,7 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
         check_continuation_conditions(&mut parsing_state);
         parsing_state.set_open_par_exists();
         create_new_block_starts(&mut parsing_state);
-        dbg!(line);
+        // dbg!(line);
         parsing_state.line_state = LineState::new(line)
     }
     dbg!(&parsing_state);
@@ -266,8 +268,9 @@ pub fn check_continuation_conditions(parsing_state: &mut ParsingState) {
                 let old_line_state = line_state.clone();
                 line_state.consume_indent_until_sfls_ge(*indent_amount);
                 //TODO: make this work with blank lines too?
-                if line_state.space_from_last_structure >= *indent_amount {
-                    line_state.space_from_last_structure -= *indent_amount;
+                if line_state.space_from_last_structure >= *indent_amount || line_state.is_empty() {
+                    line_state.space_from_last_structure -=
+                        std::cmp::min(*indent_amount, line_state.space_from_last_structure);
                     parsing_state.open_block_depth += 1;
                     match blocks.last() {
                         None => break 'outer,
@@ -291,7 +294,7 @@ pub fn check_continuation_conditions(parsing_state: &mut ParsingState) {
             ThematicBreak => break,
             IndentedCodeBlock(_, _) => {
                 line_state.consume_indent_until_sfls_ge(4);
-                if line_state.space_from_last_structure >= 4 {
+                if line_state.space_from_last_structure >= 4 || line_state.is_empty() {
                     parsing_state.open_block_depth += 1;
                 }
                 break;
@@ -818,10 +821,10 @@ fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block> {
 // }
 
 fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block> {
-    let start_offset = line_state.offset();
+    let start_offset = dbg!(line_state.offset());
     line_state.consume_while_char_eq('#');
-    let pound_count = line_state.offset() - start_offset;
-    if 0 < pound_count || pound_count > 6 {
+    let pound_count = (line_state.offset() - start_offset);
+    if (0 >= pound_count || pound_count > 6) {
         return None;
     }
 
@@ -829,7 +832,7 @@ fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block> {
         return Some(Heading(Inline::new(vec![]), pound_count));
     }
 
-    if !line_state.consume_one_space() {
+    if !dbg!(line_state.consume_one_space()) {
         return None;
     }
 
@@ -863,7 +866,7 @@ fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block> {
             pre_space_seen = false;
             post_space_pounds = None;
             post_pounds_space = false;
-            while trailing_line_state.offset() < c_i {
+            while trailing_line_state.offset() <= c_i {
                 str_out.push(trailing_line_state.next().unwrap());
             }
         }
@@ -876,12 +879,38 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
     let line_state = &mut parsing_state.line_state.clone();
     let simple_starts_with = |target_str: &'static str| -> Box<dyn Fn(&mut LineState) -> bool> {
         Box::new(move |char_iter: &mut LineState| -> bool {
-            for (c_in, c_target) in char_iter.zip(target_str.chars()) {
+            let mut chars_seen = 0;
+            // need to prevent zip from calling the last (unsuccessful) next.
+            for (c_in, c_target) in char_iter
+                .by_ref()
+                .take(target_str.len())
+                .zip(target_str.chars())
+            {
                 if c_in.to_ascii_lowercase() != c_target {
                     return false;
                 }
+                chars_seen += 1;
             }
-            true
+            dbg!(target_str);
+            chars_seen == target_str.len()
+        })
+    };
+    let starts_with_match_case = |target_str: &'static str| -> Box<dyn Fn(&mut LineState) -> bool> {
+        Box::new(move |char_iter: &mut LineState| -> bool {
+            let mut chars_seen = 0;
+            // need to prevent zip from calling the last (unsuccessful) next.
+            for (c_in, c_target) in char_iter
+                .by_ref()
+                .take(target_str.len())
+                .zip(target_str.chars())
+            {
+                if c_in != c_target {
+                    return false;
+                }
+                chars_seen += 1;
+            }
+            dbg!(target_str);
+            chars_seen == target_str.len()
         })
     };
     let special_tag: Box<dyn Fn(&mut LineState) -> bool> =
@@ -889,7 +918,7 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
             for s in ["<pre", "<script", "<style", "<textarea"] {
                 let mut new_iter = char_iter.clone();
                 if simple_starts_with(s)(&mut new_iter)
-                    && (char_iter.is_empty() || char_iter.next_if(|c| " \t>".contains(c)).is_some())
+                    && (new_iter.is_empty() || new_iter.next_if(|c| " \t>".contains(c)).is_some())
                 {
                     return true;
                 }
@@ -910,11 +939,19 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
         (simple_starts_with("<!--"), vec!["-->"]),
         (simple_starts_with("<?"), vec!["?>"]),
         (exclamation, vec![">"]),
-        (simple_starts_with("<![CDATA["), vec!["]]>"]),
+        (starts_with_match_case("<![CDATA["), vec!["]]>"]),
     ] {
         let mut line_state_clone = line_state.clone();
         if start_con(&mut line_state_clone) {
-            let string_out: String = line_state.collect();
+            let mut string_out: String = String::new();
+            for _ in 0..parsing_state.line_state.space_from_last_structure {
+                string_out.push(' ');
+            }
+            for c in &mut *line_state {
+                string_out.push(c);
+            }
+
+            string_out.push_str(&(line_state.collect::<String>()));
             let is_open = !end_strs.iter().any(|s| string_out.contains(s));
             return Some(HTMLBlock(
                 string_out,
@@ -990,17 +1027,32 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
         "ul",
     ];
 
-    line_state.next_if_char_eq('<')?;
+    let mut eat_lt_iter = line_state.clone();
+    dbg!(eat_lt_iter.next_if_char_eq('<'))?;
+    dbg!("---------------------------------------------");
+    dbg!(&eat_lt_iter);
+    dbg!("---------------------------------------------");
 
     for rt in reserved_tags {
-        let mut line_state_clone = line_state.clone();
-        if simple_starts_with(rt)(&mut line_state_clone)
-            && (line_state_clone.is_empty()
-                || line_state_clone.next_if(|c| " \t>".contains(c)).is_some()
-                || (line_state_clone.next_if_char_eq('/').is_some()
-                    && line_state_clone.next_if_char_eq('>').is_some()))
+        let mut line_state_clone = eat_lt_iter.clone();
+        if (simple_starts_with(rt)(&mut line_state_clone))
+            && dbg!(
+                (dbg!(line_state_clone.is_empty())
+                    || dbg!(&mut line_state_clone)
+                        .next_if(|c| " \t>".contains(c))
+                        .is_some()
+                    || (line_state_clone.next_if_char_eq('/').is_some()
+                        && line_state_clone.next_if_char_eq('>').is_some()))
+            )
         {
-            return Some(HTMLBlock(line_state.collect(), true, BlankLine));
+            let mut string_out = String::new();
+            for _ in 0..parsing_state.line_state.space_from_last_structure {
+                string_out.push(' ');
+            }
+            for c in line_state {
+                string_out.push(c);
+            }
+            return Some(HTMLBlock(string_out, true, BlankLine));
         }
     }
 
@@ -1009,8 +1061,8 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
         return None;
     }
 
-    let mut tag_finder = line_state.char_iter.clone();
-    match line_state.next()? {
+    let mut tag_finder = eat_lt_iter.char_iter.clone();
+    match tag_finder.next()? {
         '/' => parse_closing_tag(&mut tag_finder),
         c => {
             if c.is_ascii_alphabetic() {
@@ -1023,7 +1075,14 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
 
     tag_finder.consume_while(|c| " \t".contains(c));
     if tag_finder.is_empty() {
-        return Some(HTMLBlock(line_state.collect(), true, BlankLine));
+        let mut string_out = String::new();
+        for _ in 0..parsing_state.line_state.space_from_last_structure {
+            string_out.push(' ');
+        }
+        for c in &mut *line_state {
+            string_out.push(c);
+        }
+        return Some(HTMLBlock(string_out, true, BlankLine));
     } else {
         return None;
     }
@@ -1361,7 +1420,7 @@ pub fn close_paragraph(parsing_state: &mut ParsingState) {
 //     }
 // }
 
-pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
+fn create_new_block_starts(parsing_state: &mut ParsingState) {
     'blank_line: {
         if dbg!(parsing_state.line_state.is_blank_line()) {
             match parsing_state
@@ -1438,7 +1497,7 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
         FencedCodeBlock(chars, is_open @ true, marker, _, indent_count, marker_count) => {
             let mut try_to_close_chars = parsing_state.line_state.clone();
             try_to_close_chars.consume_indent_until_sfls_ge(4);
-            if parsing_state.line_state.space_from_last_structure <= 3 {
+            if try_to_close_chars.space_from_last_structure <= 3 {
                 match fenced_code_block_encountered(&mut try_to_close_chars) {
                     Some(FencedCodeBlock(_, _, t, infstr, _, tc)) => {
                         if t == *marker && infstr.len() == 0 && tc >= *marker_count {
@@ -1486,8 +1545,19 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
     }
     // we do not want to consume more than 4 for the case that we are creating an indented code
     // block in which case we have to copy in those spaces
+    // let mut pre_space_line = parsing_state.line_state.clone();
     parsing_state.line_state.consume_indent_until_sfls_ge(4);
     parsing_state.set_open_pars();
+    // obd is unmodified at this point, since we know we are not in a blank line at  this point,
+    // that means that *something* will eventually get added to list item
+    let mut depth_of_list_being_added_to = None;
+    if let (ListItem(..), depth) = dbg!(
+        parsing_state
+            .document
+            .get_general_container(parsing_state.open_block_depth)
+    ) {
+        depth_of_list_being_added_to = Some(depth - 1);
+    }
 
     if parsing_state.line_state.space_from_last_structure <= 3 {
         // First check for SetextHeading
@@ -1502,9 +1572,9 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
 
                 try_to_setext_iter.consume_while_char_eq(c_0);
 
-                let dash_count = try_to_setext_iter.offset() - pre_dash_offset;
+                // let dash_count = try_to_setext_iter.offset() - pre_dash_offset;
 
-                if dash_count >= 3 && try_to_setext_iter.is_blank_line() {
+                if try_to_setext_iter.is_blank_line() {
                     close_paragraph(parsing_state);
                     let mut setext_inline = Inline::new(vec![]);
                     match parsing_state.get_open_block() {
@@ -1512,11 +1582,19 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
                             if il.string.is_empty() {
                                 break 'setext_check;
                             }
+                            while let Some(last_char) = il.string.pop() {
+                                if " \t".contains(last_char) {
+                                    continue;
+                                } else {
+                                    il.string.push(last_char);
+                                    break;
+                                }
+                            }
                             mem::swap(&mut setext_inline, il);
                         }
                         _ => panic!(),
                     }
-                    match parsing_state.document.get_block(parsing_state.open_block_depth) {
+                    match parsing_state.document.get_general_container(parsing_state.open_block_depth).0 {
                         // by definition some container block
                         Document(blocks) |
                         BlockQuote(blocks, _) |
@@ -1531,23 +1609,13 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
             }
         }
 
-        // obd is unmodified at this point, since we know we are not in a blank line at  this point,
-        // that means that *something* will eventually get added to list item
-        let mut added_to_list = None;
-        if let (ListItem(..), depth) = parsing_state
-            .document
-            .get_general_container(parsing_state.open_block_depth)
-        {
-            added_to_list = Some(depth - 1);
-        }
-
         // next check for thematic break (before we add to list for priority reasons)
         // because it is established non empty, bounds check is not needed
         let mut thematic_break_line = parsing_state.line_state.clone();
         if thematic_break_encountered(&mut thematic_break_line) {
             close_paragraph(parsing_state);
 
-            if let Some(list_depth) = added_to_list {
+            if let Some(list_depth) = depth_of_list_being_added_to {
                 match parsing_state.document.get_block(list_depth) {
                     List(_, is_tight, _, _blank_line_encountered) => {
                         *is_tight = parsing_state
@@ -1589,7 +1657,7 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
                 Some((lt, li)) => {
                     if list_type.same_list_eq(&lt) {
                         close_paragraph(parsing_state);
-                        added_to_list = Some(parsing_state.open_block_depth);
+                        depth_of_list_being_added_to = Some(parsing_state.open_block_depth);
                         match parsing_state.get_open_block() {
                             List(blocks, _, _, _) => blocks.push(li),
                             _ => unreachable!(),
@@ -1602,21 +1670,6 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
                 None => (),
             }
         }
-
-        // at this point, if the last matched block is a list item, then we can let potentially
-        // non-tight lists actually be non-tight
-        if let Some(depth_of_list_block) = added_to_list {
-            match parsing_state.document.get_block(depth_of_list_block) {
-                List(_, is_tight, _, _blank_line_encountered) => {
-                    *is_tight = parsing_state
-                        .blank_line_depth
-                        .map_or(true, |d| d > depth_of_list_block)
-                        && *is_tight
-                }
-                _ => unreachable!(),
-            }
-        }
-        parsing_state.blank_line_depth = None;
 
         // keep looking for new block starts
         while parsing_state.line_state.space_from_last_structure <= 3 {
@@ -1697,7 +1750,8 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
                 }
             }
             let mut atx_iter = parsing_state.line_state.clone();
-            if let Some(atxh) = atx_heading_encountered(&mut atx_iter) {
+            // dbg!("TRYING_TO_ATX_ITER");
+            if let Some(atxh) = (atx_heading_encountered(&mut atx_iter)) {
                 close_paragraph(parsing_state);
                 let (parent, new_obd) = parsing_state
                     .document
@@ -1727,6 +1781,21 @@ pub fn create_new_block_starts(parsing_state: &mut ParsingState) {
             break;
         }
     }
+
+    // at this point, if the last matched block is a list item, then we can let potentially
+    // non-tight lists actually be non-tight
+    if let Some(depth_of_list_block) = depth_of_list_being_added_to {
+        match parsing_state.document.get_block(depth_of_list_block) {
+            List(_, is_tight, _, _blank_line_encountered) => {
+                *is_tight = parsing_state
+                    .blank_line_depth
+                    .map_or(true, |d| dbg!(d > depth_of_list_block))
+                    && *is_tight
+            }
+            _ => unreachable!(),
+        }
+    }
+    parsing_state.blank_line_depth = None;
 
     // its a blank line from here on out
     if parsing_state.line_state.is_blank_line() {
