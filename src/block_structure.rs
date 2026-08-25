@@ -1,15 +1,12 @@
 use std::collections::HashMap;
 use std::mem;
-use std::str::Split;
-use std::sync::TryLockError::Poisoned;
-
-use phf::set::Iter;
 
 use crate::Block::*;
 use crate::HTMLEndCondition::*;
 use crate::ListType::*;
 use crate::ast_types::*;
 use crate::inline::*;
+use crate::parsers::*;
 use crate::peekable_char_indices::PeekableCharIndices;
 
 type LRDTable = HashMap<String, (String, String)>;
@@ -127,9 +124,9 @@ impl<'a> LineState<'a> {
     }
 
     fn next_if_helper(&mut self, func: &impl Fn(char) -> bool) -> Option<char> {
-        match (self.peek()) {
+        match self.peek() {
             Some(tup) => {
-                if (func(tup)) {
+                if func(tup) {
                     return self.next();
                 } else {
                     None
@@ -224,7 +221,7 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     (parsing_state.document, parsing_state.lrd_table)
 }
 
-pub fn check_continuation_conditions(parsing_state: &mut ParsingState) {
+fn check_continuation_conditions(parsing_state: &mut ParsingState) {
     let mut current_block = &parsing_state.document;
     let line_state = &mut parsing_state.line_state;
     // println!("called ccc!");
@@ -313,10 +310,6 @@ pub fn check_continuation_conditions(parsing_state: &mut ParsingState) {
             }
         }
     }
-}
-
-fn is_blank_line(line: &Vec<char>, offset: usize) -> bool {
-    line[offset..].iter().all(|c| *c == ' ' || *c == '\t')
 }
 
 // #[cfg(test)]
@@ -823,8 +816,8 @@ fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block> {
 fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block> {
     let start_offset = dbg!(line_state.offset());
     line_state.consume_while_char_eq('#');
-    let pound_count = (line_state.offset() - start_offset);
-    if (0 >= pound_count || pound_count > 6) {
+    let pound_count = line_state.offset() - start_offset;
+    if 0 >= pound_count || pound_count > 6 {
         return None;
     }
 
@@ -1089,7 +1082,7 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
 }
 
 //TODO: make this use
-pub fn close_paragraph(parsing_state: &mut ParsingState) {
+fn close_paragraph(parsing_state: &mut ParsingState) {
     if !parsing_state.open_par_exists {
         parsing_state.open_par_above = false;
         return;
@@ -1568,8 +1561,6 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             if parsing_state.open_par_above && "-=".contains(c_0) {
                 let mut try_to_setext_iter = parsing_state.line_state.clone();
                 // the line is of the form "[pre-matched-structure][1-3 space](-|=)*' '*"
-                let pre_dash_offset = try_to_setext_iter.offset();
-
                 try_to_setext_iter.consume_while_char_eq(c_0);
 
                 // let dash_count = try_to_setext_iter.offset() - pre_dash_offset;
@@ -1751,11 +1742,12 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             }
             let mut atx_iter = parsing_state.line_state.clone();
             // dbg!("TRYING_TO_ATX_ITER");
-            if let Some(atxh) = (atx_heading_encountered(&mut atx_iter)) {
+            if let Some(atxh) = atx_heading_encountered(&mut atx_iter) {
                 close_paragraph(parsing_state);
-                let (parent, new_obd) = parsing_state
+                let parent = parsing_state
                     .document
-                    .get_general_container(parsing_state.open_block_depth);
+                    .get_general_container(parsing_state.open_block_depth)
+                    .0;
                 match parent {
                     Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
                         blocks.push(atxh);
@@ -1764,12 +1756,12 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
                     _ => unreachable!(),
                 }
             }
-            let mut html_iter = parsing_state.line_state.clone();
             if let Some(html) = html_start_encountered(parsing_state) {
                 close_paragraph(parsing_state);
-                let (parent, new_obd) = parsing_state
+                let parent = parsing_state
                     .document
-                    .get_general_container(parsing_state.open_block_depth);
+                    .get_general_container(parsing_state.open_block_depth)
+                    .0;
                 match parent {
                     Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
                         blocks.push(html);
