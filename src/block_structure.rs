@@ -204,7 +204,7 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     };
 
     for line in lines {
-        dbg!(&parsing_state);
+        // dbg!(&parsing_state);
         parsing_state.set_new_line_state();
         check_continuation_conditions(&mut parsing_state);
         parsing_state.set_open_par_exists();
@@ -212,7 +212,7 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
         // dbg!(line);
         parsing_state.line_state = LineState::new(line)
     }
-    dbg!(&parsing_state);
+    // dbg!(&parsing_state);
     parsing_state.set_new_line_state();
     check_continuation_conditions(&mut parsing_state);
     parsing_state.set_open_par_exists();
@@ -312,183 +312,6 @@ fn check_continuation_conditions(parsing_state: &mut ParsingState) {
     }
 }
 
-// #[cfg(test)]
-// mod cc_tests {
-//     use super::*;
-//     use pretty_assertions::assert_eq;
-//
-//     fn test_cc(ast: &mut Block, line: &str, expected_block: &mut Block, exp_offset: usize) {
-//         let line: Vec<char> = line.chars().collect();
-//         // println!("{:?}", line);
-//         let mut char_offset: usize = 0;
-//         let mut effective_column_number: usize = 0;
-//         let mut additional_possible_spaces: usize = 0;
-//         let mut open_block_depth: usize = 0;
-//         check_continuation_conditions(
-//             &ast,
-//             &line,
-//             &mut char_offset,
-//             &mut effective_column_number,
-//             &mut additional_possible_spaces,
-//             &mut open_block_depth,
-//         );
-//         assert_eq!(
-//             (ast.get_block(open_block_depth), char_offset),
-//             (expected_block, exp_offset)
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cc_1() {
-//         let mut test_tree = Document(vec![]);
-//         test_cc(&mut test_tree, "> abc", &mut Document(vec![]), 0);
-//     }
-//
-//     #[test]
-//     fn test_cc_qb_1() {
-//         let mut test_tree = Document(vec![BlockQuote(vec![ThematicBreak], true)]);
-//         let mut exp_tree = BlockQuote(vec![ThematicBreak], true);
-//         test_cc(&mut test_tree, ">hello", &mut exp_tree, 1);
-//     }
-//
-//     #[test]
-//     fn test_cc_qb_2() {
-//         let mut test_tree = Document(vec![BlockQuote(vec![ThematicBreak], true)]);
-//         let mut exp_tree = BlockQuote(vec![ThematicBreak], true);
-//         test_cc(&mut test_tree, "> hello", &mut exp_tree, 2);
-//     }
-//
-//     #[test]
-//     fn test_cc_qb_3() {
-//         let mut test_tree = Document(vec![BlockQuote(vec![ThematicBreak], true)]);
-//         let mut exp_tree = BlockQuote(vec![ThematicBreak], true);
-//         test_cc(&mut test_tree, "   > hello", &mut exp_tree, 5);
-//     }
-//
-//     #[test]
-//     fn test_cc_qb_4() {
-//         let mut test_tree = Document(vec![BlockQuote(vec![ThematicBreak], true)]);
-//         let mut exp_tree = BlockQuote(vec![ThematicBreak], true);
-//         test_cc(&mut test_tree, " > hello", &mut exp_tree, 3);
-//     }
-//
-//     #[test]
-//     fn test_cc_qb_5() {
-//         let mut test_tree = Document(vec![BlockQuote(vec![ThematicBreak], true)]);
-//         let mut exp_tree = BlockQuote(vec![ThematicBreak], true);
-//         test_cc(&mut test_tree, ">  hello", &mut exp_tree, 2);
-//     }
-//
-//     #[test]
-//     fn test_cc_qb_6() {
-//         let mut test_tree = Document(vec![BlockQuote(vec![ThematicBreak], false)]);
-//         let mut exp_tree = test_tree.clone();
-//         test_cc(&mut test_tree, ">  hello", &mut exp_tree, 0);
-//     }
-//
-//     #[test]
-//     fn test_cc_list_1() {
-//         let mut test_tree = Document(vec![List(
-//             vec![ListItem(vec![], true, 2)],
-//             true,
-//             UnorderedList('*'),
-//             false,
-//         )]);
-//         let mut exp_tree = ListItem(vec![], true, 2);
-//         test_cc(&mut test_tree, "  >  hello", &mut exp_tree, 2);
-//     }
-//
-//     #[test]
-//     fn test_cc_list_2() {
-//         let mut test_tree = Document(vec![List(
-//             vec![ListItem(vec![], true, 2)],
-//             true,
-//             UnorderedList('*'),
-//             false,
-//         )]);
-//         let mut exp_tree = List(
-//             vec![ListItem(vec![], true, 2)],
-//             true,
-//             UnorderedList('*'),
-//             false,
-//         );
-//         test_cc(&mut test_tree, " >  hello", &mut exp_tree, 0);
-//     }
-//
-//     #[test]
-//     fn test_cc_both_3() {
-//         let mut test_tree = Document(vec![List(
-//             vec![ListItem(vec![BlockQuote(vec![], true)], true, 2)],
-//             true,
-//             UnorderedList('*'),
-//             false,
-//         )]);
-//         let mut exp_tree = BlockQuote(vec![], true);
-//         test_cc(&mut test_tree, "  > hello", &mut exp_tree, 4);
-//     }
-// }
-
-// fn consume_indent(parsing_state: &mut ParsingState, line_iter: &mut PeekableCharIndices) {
-//     while let Some((_, c)) = line_iter.next_if(|(_, c)| " \t".contains(c)) {
-//         if c == '\t' {
-//             parsing_state.space_from_last_structure +=
-//                 4 - (parsing_state.effective_column_number % 4);
-//             parsing_state.effective_column_number +=
-//                 4 - (parsing_state.effective_column_number % 4);
-//         } else {
-//             parsing_state.space_from_last_structure += 1;
-//             parsing_state.effective_column_number += 1;
-//         }
-//     }
-// }
-//
-// fn consume_indent_until_sfls_ge(
-//     parsing_state: &mut ParsingState,
-//     line_iter: &mut PeekableCharIndices,
-//     n: usize,
-// ) {
-//     if parsing_state.space_from_last_structure >= n {
-//         return;
-//     }
-//     while let Some((_, c)) = line_iter.next_if(|(_, c)| " \t".contains(c)) {
-//         if c == '\t' {
-//             parsing_state.space_from_last_structure +=
-//                 4 - (parsing_state.effective_column_number % 4);
-//             parsing_state.effective_column_number +=
-//                 4 - (parsing_state.effective_column_number % 4);
-//         } else {
-//             parsing_state.space_from_last_structure += 1;
-//             parsing_state.effective_column_number += 1;
-//         }
-//         if parsing_state.space_from_last_structure >= n {
-//             parsing_state.additional_possible_spaces = parsing_state.space_from_last_structure - n;
-//             break;
-//         }
-//     }
-// }
-//
-/// char_offset: how far you have to literally offset the line to get to the space character
-/// effective_offset: on what "column" this space is aligning
-/// returns: (new_char_offset, new_effective_column_number)
-/// This is hard to think about, no wonder they start with it in the spec, cause it would have been good to
-/// design around tabs in the first place.
-// fn consume_effective_indent(
-//     line: &Vec<char>,
-//     mut char_offset: usize,
-//     mut effective_column_number: usize,
-// ) -> (usize, usize) {
-//     //in contexts where spaces help to define block structure, tabs behave as if they were replaced by spaces with a tab stop of 4 characters.
-//     while line.len() > char_offset && " \t".contains(line[char_offset]) {
-//         if line[char_offset] == '\t' {
-//             effective_column_number += 4 - (effective_column_number % 4);
-//         } else {
-//             effective_column_number += 1;
-//         }
-//         char_offset += 1;
-//     }
-//     return (char_offset, effective_column_number);
-// }
-
 fn thematic_break_encountered(char_iter: &mut LineState) -> bool {
     let Some(br_sym) = char_iter.next_if(|c| "-*_".contains(c)) else {
         return false;
@@ -583,121 +406,6 @@ fn list_item_encountered(line_state: &mut LineState) -> Option<(ListType, Block)
     None
 }
 
-/// returns hypothetically, if you "ate" and matched this, where the offsets would end up
-/// returns Opt(listtype, listitem, new_char_offset, new_eff_column_number,
-/// new additional_possible_spaces)
-/// bounds checking is expected by caller
-/// preceding spaces should be dealt with by caller
-/// char_offset should be set on the first non-space char
-// fn list_item_encountered(
-//     line: &Vec<char>,
-//     char_offset: usize,
-//     eff_column_number: usize,
-//     psc: usize,
-// ) -> Option<(ListType, Block, usize, usize, usize)> {
-//     let c = line[char_offset];
-//     if c.is_numeric() {
-//         let mut number_builder = String::from(line[char_offset]);
-//         for j in 1..10 {
-//             if line.len() <= char_offset + j {
-//                 return None;
-//             }
-//             if line[char_offset + j].is_numeric() {
-//                 (&mut number_builder).push(line[char_offset + j]);
-//                 continue;
-//             }
-//             if ".)".contains(line[char_offset + j]) {
-//                 let (post_space_char_offset, post_space_eff_col_number) =
-//                     consume_indent(line, char_offset + j + 1, eff_column_number + j + 1);
-//
-//                 if line.len() <= post_space_char_offset {
-//                     // ie, the rest of the line is blank
-//                     return Some((
-//                         OrderedList(line[char_offset + j], number_builder.parse().unwrap()),
-//                         ListItem(vec![], true, psc + j + 2),
-//                         post_space_char_offset,
-//                         post_space_eff_col_number,
-//                         0,
-//                     ));
-//                 }
-//                 let following_space_count = post_space_eff_col_number - eff_column_number - j - 1;
-//                 if 1 <= following_space_count && following_space_count <= 4 {
-//                     return Some((
-//                         OrderedList(line[char_offset + j], number_builder.parse().unwrap()),
-//                         ListItem(vec![], true, psc + j + 1 + following_space_count),
-//                         post_space_char_offset,
-//                         post_space_eff_col_number,
-//                         0, // a tab character immediately following the list delimiter will be
-//                            // entirely consumed in this manner
-//                     ));
-//                 }
-//                 if following_space_count > 4 {
-//                     let (new_eff_col_number, possible_spaces) = if line[char_offset + j + 1] == '\t'
-//                     {
-//                         let tmp = eff_column_number + 1;
-//                         let dist_to_new_stop = 4 - (tmp % 4);
-//                         (tmp + dist_to_new_stop, dist_to_new_stop - 1)
-//                     } else {
-//                         (eff_column_number + j + 1, 0)
-//                     };
-//                     return Some((
-//                         OrderedList(line[char_offset + j], number_builder.parse().unwrap()),
-//                         ListItem(vec![], true, psc + j + 2),
-//                         char_offset + j + 2,
-//                         new_eff_col_number,
-//                         possible_spaces,
-//                     ));
-//                 }
-//             }
-//             return None;
-//         }
-//     }
-//
-//     if "-+*".contains(line[char_offset]) {
-//         let (post_space_char_offset, post_space_eff_col_number) =
-//             consume_indent(line, char_offset + 1, eff_column_number + 1);
-//
-//         if line.len() <= post_space_char_offset {
-//             // ie, the rest of the line is blank
-//             return Some((
-//                 UnorderedList(line[char_offset]),
-//                 ListItem(vec![], true, psc + 2),
-//                 post_space_char_offset,
-//                 post_space_eff_col_number,
-//                 0,
-//             ));
-//         }
-//         let following_space_count = post_space_eff_col_number - eff_column_number - 1;
-//         if 1 <= following_space_count && following_space_count <= 4 {
-//             return Some((
-//                 UnorderedList(line[char_offset]),
-//                 ListItem(vec![], true, psc + 1 + following_space_count),
-//                 post_space_char_offset,
-//                 post_space_eff_col_number,
-//                 0, // a tab character immediately following the list delimiter will be
-//                    // entirely consumed in this manner
-//             ));
-//         }
-//         if following_space_count > 4 {
-//             let (new_eff_col_number, possible_spaces) = if line[char_offset + 1] == '\t' {
-//                 let tmp = eff_column_number + 1;
-//                 let dist_to_new_stop = 4 - (tmp % 4);
-//                 (tmp + dist_to_new_stop, dist_to_new_stop - 1)
-//             } else {
-//                 (eff_column_number + 2, 0)
-//             };
-//             return Some((
-//                 UnorderedList(line[char_offset]),
-//                 ListItem(vec![], true, psc + 2),
-//                 char_offset + 2,
-//                 new_eff_col_number,
-//                 possible_spaces,
-//             ));
-//         }
-//     }
-//     return None;
-// }
-
 fn block_quote_encountered(line_state: &mut LineState) -> bool {
     if line_state.next_if_char_eq('>').is_none() {
         return false;
@@ -707,38 +415,6 @@ fn block_quote_encountered(line_state: &mut LineState) -> bool {
     }
     return true;
 }
-
-/// returns hypothetically, if you "ate" and matched this, where the offsets would end up
-/// returns Opt(new_char_offset, new_eff_column_number, additional_possible_spaces)
-/// bounds checking is expected by caller
-/// preceding spaces should be dealt with by caller ie, line[char_offset] should be not space
-/// char_offset should be set on the first non-space char
-// fn block_quote_encountered(
-//     line: &Vec<char>,
-//     char_offset_after_space: usize,
-//     eff_column_number: usize,
-// ) -> Option<(usize, usize, usize)> {
-//     if line[char_offset_after_space] == '>' {
-//         if line.len() <= char_offset_after_space + 1 {
-//             return Some((char_offset_after_space + 1, eff_column_number + 1, 0));
-//         }
-//         if line[char_offset_after_space + 1] == ' ' {
-//             return Some((char_offset_after_space + 2, eff_column_number + 2, 0));
-//         } else if line[char_offset_after_space + 1] == '\t' {
-//             let new_eff_col = eff_column_number + 1; // since there is the > being consumed
-//             let dist_to_new_stop = 4 - (new_eff_col % 4);
-//             return Some((
-//                 char_offset_after_space + 2,
-//                 new_eff_col + dist_to_new_stop,
-//                 dist_to_new_stop - 1,
-//             ));
-//             // dist_to_new_stop - 1 cause the block quote "eats" one of the spaces.
-//         } else {
-//             return Some((char_offset_after_space + 1, eff_column_number + 1, 0));
-//         }
-//     }
-//     None
-// }
 
 fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block> {
     let pre_space_count = line_state.space_from_last_structure;
@@ -774,47 +450,9 @@ fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block> {
         tick_count,
     ));
 }
-// fn fenced_code_block_encountered(
-//     line: &Vec<char>,
-//     char_offset_after_space: usize,
-//     psc: usize,
-// ) -> Option<Block> {
-//     let t = line[char_offset_after_space];
-//     if "~`".contains(t) {
-//         let tick_count = line[char_offset_after_space..]
-//             .iter()
-//             .take_while(|c| **c == t)
-//             .count();
-//         if tick_count >= 3 {
-//             if t == '`' {
-//                 if (&line[char_offset_after_space + tick_count..])
-//                     .iter()
-//                     .any(|c| *c == '`')
-//                 {
-//                     return None;
-//                 }
-//             }
-//             let info_string: Vec<char> = line[char_offset_after_space + tick_count..]
-//                 .iter()
-//                 .skip_while(|c| **c == ' ')
-//                 .take_while(|c| **c != ' ')
-//                 .map(|c| *c)
-//                 .collect();
-//             return Some(FencedCodeBlock(
-//                 vec![],
-//                 true,
-//                 t,
-//                 info_string,
-//                 psc,
-//                 tick_count,
-//             ));
-//         }
-//     }
-//     return None;
-// }
 
 fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block> {
-    let start_offset = dbg!(line_state.offset());
+    let start_offset = (line_state.offset());
     line_state.consume_while_char_eq('#');
     let pound_count = line_state.offset() - start_offset;
     if 0 >= pound_count || pound_count > 6 {
@@ -1021,22 +659,21 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
     ];
 
     let mut eat_lt_iter = line_state.clone();
-    dbg!(eat_lt_iter.next_if_char_eq('<'))?;
-    dbg!("---------------------------------------------");
-    dbg!(&eat_lt_iter);
-    dbg!("---------------------------------------------");
+    (eat_lt_iter.next_if_char_eq('<'))?;
+    // dbg!("=========");
+    // dbg!(&eat_lt_iter);
+    // dbg!("=========");
+    let is_closing = eat_lt_iter.next_if_char_eq('/').is_some();
 
     for rt in reserved_tags {
         let mut line_state_clone = eat_lt_iter.clone();
-        if (simple_starts_with(rt)(&mut line_state_clone))
-            && dbg!(
-                (dbg!(line_state_clone.is_empty())
-                    || dbg!(&mut line_state_clone)
-                        .next_if(|c| " \t>".contains(c))
-                        .is_some()
-                    || (line_state_clone.next_if_char_eq('/').is_some()
-                        && line_state_clone.next_if_char_eq('>').is_some()))
-            )
+        if simple_starts_with(rt)(&mut line_state_clone)
+            && (line_state_clone.is_empty()
+                || (&mut line_state_clone)
+                    .next_if(|c| " \t>".contains(c))
+                    .is_some()
+                || (line_state_clone.next_if_char_eq('/').is_some()
+                    && line_state_clone.next_if_char_eq('>').is_some()))
         {
             let mut string_out = String::new();
             for _ in 0..parsing_state.line_state.space_from_last_structure {
@@ -1055,16 +692,13 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
     }
 
     let mut tag_finder = eat_lt_iter.char_iter.clone();
-    match tag_finder.next()? {
-        '/' => parse_closing_tag(&mut tag_finder),
-        c => {
-            if c.is_ascii_alphabetic() {
-                parse_opening_tag(&mut tag_finder)
-            } else {
-                None
-            }
-        }
-    };
+    if is_closing {
+        parse_closing_tag(&mut tag_finder)?;
+    } else if tag_finder.next_if(|c| c.is_ascii_alphabetic()).is_some() {
+        parse_closing_tag(&mut tag_finder)?;
+    } else {
+        return None;
+    }
 
     tag_finder.consume_while(|c| " \t".contains(c));
     if tag_finder.is_empty() {
@@ -1096,15 +730,17 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
 
     'collect_lrds: loop {
         let mut current_iteration_iter = chars.clone();
-        // if current_iteration_iter.next_if_char_eq('[').is_none() {
-        //     break 'collect_lrds;
-        // }
+
         let mut link_lab_iter_start = current_iteration_iter.clone();
 
-        let Some(link_label_end) = parse_link_label(&mut current_iteration_iter) else {
+        if current_iteration_iter.next_if_char_eq('[').is_none() {
+            break 'collect_lrds;
+        }
+        let Some(link_label_end) = dbg!(parse_link_label(&mut current_iteration_iter)) else {
             break 'collect_lrds;
         };
 
+        dbg!(&current_iteration_iter);
         if current_iteration_iter.next_if_char_eq(':').is_none() {
             break 'collect_lrds;
         }
@@ -1112,9 +748,10 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
         //optional spaces or tabs
         current_iteration_iter.consume_while(|c| " \t\n".contains(c));
 
+        dbg!(&current_iteration_iter);
         let mut link_dest_iter_start = current_iteration_iter.clone();
         let Some((mut link_dest_end, link_dest_in_brackets)) =
-            parse_link_destination(&mut current_iteration_iter)
+            dbg!(parse_link_destination(&mut current_iteration_iter))
         else {
             break 'collect_lrds;
         };
@@ -1125,17 +762,18 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
 
         current_iteration_iter.consume_while(|c| " \t".contains(c));
 
-        let is_valid_lrd = current_iteration_iter.next_if_char_eq('\n').is_some();
+        let is_valid_lrd = current_iteration_iter.next_if_char_eq('\n').is_some()
+            || current_iteration_iter.is_empty();
 
         // the way we created paragraphs means that pre_whitespace in line is already stripped
         // so !c.is_whitespace() is true for all c that follow an \n
         let mut link_title_iter_start = current_iteration_iter.clone();
-        let mut current_iter_clone = current_iteration_iter.clone();
+        let mut find_link_title_iter = current_iteration_iter.clone();
 
-        if let Some(link_title_offset) = parse_link_title(&mut current_iter_clone)
+        if let Some(link_title_offset) = dbg!(parse_link_title(&mut find_link_title_iter))
             && {
-                current_iter_clone.consume_while(|c| " \t".contains(c));
-                match current_iter_clone.peek() {
+                find_link_title_iter.consume_while(|c| " \t".contains(c));
+                match find_link_title_iter.peek() {
                     Some('\n') | None => true,
                     _ => false,
                 }
@@ -1150,7 +788,7 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
                     link_dest_iter_start.collect_until_offset(link_dest_end),
                     link_title_iter_start.collect_until_offset(link_title_offset),
                 ));
-            chars = current_iter_clone;
+            chars = find_link_title_iter;
             continue 'collect_lrds;
         } else if is_valid_lrd {
             parsing_state
@@ -1177,241 +815,6 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
     parsing_state.open_par_above = false;
     parsing_state.open_par_exists = false;
 }
-
-// #[cfg(test)]
-// mod cp_tests {
-//     use super::*;
-//     use pretty_assertions::assert_eq;
-//
-//     fn test_cp(
-//         ast: &mut Block,
-//         expected_ast: &mut Block,
-//         exp_table: &mut HashMap<Vec<char>, (Vec<char>, Vec<char>)>,
-//     ) {
-//         let (mut opa, mut ope) = (true, true);
-//         let mut lrd_table: HashMap<Vec<char>, (Vec<char>, Vec<char>)> = HashMap::new();
-//         close_paragraph(ast, &mut opa, &mut ope, &mut lrd_table);
-//         assert_eq!(
-//             (expected_ast, exp_table, false, false),
-//             (ast, &mut lrd_table, opa, ope)
-//         )
-//     }
-//
-//     #[test]
-//     fn test_cp_no_def() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("hello".chars().collect()),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("hello".chars().collect()),
-//                 false,
-//             )]),
-//             &mut HashMap::new(),
-//         )
-//     }
-//
-//     #[test]
-//     fn test_cp_no_title() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("[hello]:link".chars().collect()),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-//             &mut HashMap::from([(
-//                 "hello".chars().collect(),
-//                 ("link".chars().collect(), "".chars().collect()),
-//             )]),
-//         )
-//     }
-//
-//     #[test]
-//     fn test_cp_title() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("[hello]:link (your_mom)".chars().collect()),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-//             &mut HashMap::from([(
-//                 "hello".chars().collect(),
-//                 ("link".chars().collect(), "your_mom".chars().collect()),
-//             )]),
-//         )
-//     }
-//
-//     #[test]
-//     fn test_cp_multiline() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("[\nhel\nlo\n]:\nlink \n(your_mom)".chars().collect()),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-//             &mut HashMap::from([(
-//                 "hel lo".chars().collect(),
-//                 ("link".chars().collect(), "your_mom".chars().collect()),
-//             )]),
-//         )
-//     }
-//     #[test]
-//     fn test_cp_title_fail() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("[\nhel\nlo\n]:\nlink    \n(your_mom".chars().collect()),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("(your_mom".chars().collect()),
-//                 false,
-//             )]),
-//             &mut HashMap::from([(
-//                 "hel lo".chars().collect(),
-//                 ("link".chars().collect(), "".chars().collect()),
-//             )]),
-//         )
-//     }
-//
-//     #[test]
-//     fn test_cp_link_fail_1() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect()),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect()),
-//                 false,
-//             )]),
-//             &mut HashMap::from([]),
-//         )
-//     }
-//     #[test]
-//     fn test_cp_link_fail_2() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect()),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect()),
-//                 false,
-//             )]),
-//             &mut HashMap::from([]),
-//         )
-//     }
-//     #[test]
-//     fn test_cp_more_paragraph() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new(
-//                     "[\nhel\nlo\n]:\nlink    \n'your_mom'\nand theres more"
-//                         .chars()
-//                         .collect(),
-//                 ),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(
-//                 Inline::new("and theres more".chars().collect()),
-//                 false,
-//             )]),
-//             &mut HashMap::from([(
-//                 "hel lo".chars().collect(),
-//                 ("link".chars().collect(), "your_mom".chars().collect()),
-//             )]),
-//         )
-//     }
-//     #[test]
-//     fn test_cp_2_def() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new(
-//                     "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[def2]:link2 \"desc_2\""
-//                         .chars()
-//                         .collect(),
-//                 ),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-//             &mut HashMap::from([
-//                 (
-//                     "hel lo".chars().collect(),
-//                     ("link".chars().collect(), "your_mom".chars().collect()),
-//                 ),
-//                 (
-//                     "def2".chars().collect(),
-//                     ("link2".chars().collect(), "desc_2".chars().collect()),
-//                 ),
-//             ]),
-//         )
-//     }
-//     #[test]
-//     fn test_cp_2_def_override() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new(
-//                     "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-//                         .chars()
-//                         .collect(),
-//                 ),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-//             &mut HashMap::from([(
-//                 "hel lo".chars().collect(),
-//                 ("link".chars().collect(), "your_mom".chars().collect()),
-//             )]),
-//         )
-//     }
-//     #[test]
-//     fn test_cp_fails() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new(
-//                     "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-//                         .chars()
-//                         .collect(),
-//                 ),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(
-//                 Inline::new(
-//                     "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-//                         .chars()
-//                         .collect(),
-//                 ),
-//                 false,
-//             )]),
-//             &mut HashMap::from([]),
-//         )
-//     }
-//     #[test]
-//     fn test_cp_2_escapes() {
-//         test_cp(
-//             &mut Document(vec![Paragraph(
-//                 Inline::new(
-//                     "[\nh\\el\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-//                         .chars()
-//                         .collect(),
-//                 ),
-//                 true,
-//             )]),
-//             &mut Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-//             &mut HashMap::from([
-//                 (
-//                     "h\\el lo".chars().collect(),
-//                     ("link".chars().collect(), "your_mom".chars().collect()),
-//                 ),
-//                 (
-//                     "hel lo".chars().collect(),
-//                     ("link2".chars().collect(), "desc_2".chars().collect()),
-//                 ),
-//             ]),
-//         )
-//     }
-// }
 
 fn create_new_block_starts(parsing_state: &mut ParsingState) {
     'blank_line: {
@@ -1852,332 +1255,3 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
         _ => unreachable!(),
     }
 }
-
-// #[cfg(test)]
-// mod cnbs_tests {
-//     use super::*;
-//     use pretty_assertions::assert_eq;
-//     fn test_cnbs(ast: &mut Block, line: &str, expected_ast: &mut Block, exp_offset: usize) {
-//         let line: Vec<char> = line.chars().collect();
-//         // println!("{:?}", line);
-//         let mut char_offset: usize = 0;
-//         let mut effective_column_number: usize = 0;
-//         let mut additional_possible_spaces: usize = 0;
-//         let mut obd = 0;
-//         let mut blank_line_depth = None;
-//         check_continuation_conditions(
-//             &ast,
-//             &line,
-//             &mut char_offset,
-//             &mut effective_column_number,
-//             &mut additional_possible_spaces,
-//             &mut obd,
-//         );
-//         create_new_block_starts(
-//             ast,
-//             &line,
-//             &mut char_offset,
-//             &mut effective_column_number,
-//             &mut additional_possible_spaces,
-//             &mut obd,
-//             &mut blank_line_depth,
-//             &mut HashMap::new(),
-//         );
-//         assert_eq!((ast, char_offset), (expected_ast, exp_offset));
-//     }
-//
-//     #[test]
-//     fn test_cnbs_1() {
-//         test_cnbs(
-//             &mut Document(vec![BlockQuote(
-//                 vec![Paragraph(Inline::new(vec!['a', 'b']), true)],
-//                 true,
-//             )]),
-//             ">-",
-//             &mut Document(vec![BlockQuote(
-//                 vec![Heading(Inline::new(vec!['a', 'b']), 2)],
-//                 true,
-//             )]),
-//             1,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_2() {
-//         test_cnbs(
-//             &mut Document(vec![Paragraph(Inline::new(vec!['a', 'b']), true)]),
-//             "-",
-//             &mut Document(vec![Heading(Inline::new(vec!['a', 'b']), 2)]),
-//             0,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_3() {
-//         test_cnbs(
-//             &mut Document(vec![Paragraph(Inline::new(vec!['a', 'b']), true)]),
-//             "=          ",
-//             &mut Document(vec![Heading(Inline::new(vec!['a', 'b']), 1)]),
-//             10,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_4() {
-//         test_cnbs(
-//             &mut Document(vec![Paragraph(Inline::new(vec!['a', 'b']), true)]),
-//             "- -",
-//             &mut Document(vec![
-//                 Paragraph(Inline::new(vec!['a', 'b']), false),
-//                 List(
-//                     vec![ListItem(
-//                         vec![List(
-//                             vec![ListItem(vec![], true, 2)],
-//                             true,
-//                             UnorderedList('-'),
-//                             false,
-//                         )],
-//                         true,
-//                         2,
-//                     )],
-//                     true,
-//                     UnorderedList('-'),
-//                     false,
-//                 ),
-//             ]),
-//             3,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_5() {
-//         test_cnbs(
-//             &mut Document(vec![BlockQuote(
-//                 vec![Paragraph(Inline::new(vec!['a', 'b']), true)],
-//                 false,
-//             )]),
-//             ">-",
-//             &mut Document(vec![
-//                 BlockQuote(vec![Paragraph(Inline::new(vec!['a', 'b']), false)], false),
-//                 BlockQuote(
-//                     vec![List(
-//                         vec![ListItem(vec![], true, 2)],
-//                         true,
-//                         UnorderedList('-'),
-//                         false,
-//                     )],
-//                     true,
-//                 ),
-//             ]),
-//             2,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_6() {
-//         test_cnbs(
-//             &mut Document(vec![BlockQuote(
-//                 vec![Paragraph(Inline::new(vec!['a', 'b']), true)],
-//                 true,
-//             )]),
-//             ">---",
-//             &mut Document(vec![BlockQuote(
-//                 vec![Heading(Inline::new(vec!['a', 'b']), 2)],
-//                 true,
-//             )]),
-//             3,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_7() {
-//         test_cnbs(
-//             &mut Document(vec![BlockQuote(
-//                 vec![Paragraph(Inline::new(vec!['a', 'b']), true)],
-//                 true,
-//             )]),
-//             ">***",
-//             &mut Document(vec![BlockQuote(
-//                 vec![Paragraph(Inline::new(vec!['a', 'b']), false), ThematicBreak],
-//                 true,
-//             )]),
-//             3,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_8() {
-//         test_cnbs(
-//             &mut Document(vec![BlockQuote(
-//                 vec![List(
-//                     vec![ListItem(vec![ThematicBreak], true, 2)],
-//                     true,
-//                     UnorderedList('*'),
-//                     false,
-//                 )],
-//                 true,
-//             )]),
-//             ">***",
-//             &mut Document(vec![BlockQuote(
-//                 vec![
-//                     List(
-//                         vec![ListItem(vec![ThematicBreak], true, 2)],
-//                         true,
-//                         UnorderedList('*'),
-//                         false,
-//                     ),
-//                     ThematicBreak,
-//                 ],
-//                 true,
-//             )]),
-//             3,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_9() {
-//         test_cnbs(
-//             &mut Document(vec![BlockQuote(
-//                 vec![List(
-//                     vec![ListItem(vec![ThematicBreak], true, 2)],
-//                     true,
-//                     UnorderedList('*'),
-//                     false,
-//                 )],
-//                 true,
-//             )]),
-//             ">   ***",
-//             &mut Document(vec![BlockQuote(
-//                 vec![List(
-//                     vec![ListItem(vec![ThematicBreak, ThematicBreak], true, 2)],
-//                     true,
-//                     UnorderedList('*'),
-//                     false,
-//                 )],
-//                 true,
-//             )]),
-//             6,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_continue_list_item_1() {
-//         test_cnbs(
-//             &mut Document(vec![List(
-//                 vec![ListItem(vec![ThematicBreak], true, 2)],
-//                 true,
-//                 UnorderedList('-'),
-//                 false,
-//             )]),
-//             "-",
-//             &mut Document(vec![List(
-//                 vec![
-//                     ListItem(vec![ThematicBreak], true, 2),
-//                     ListItem(vec![], true, 2),
-//                 ],
-//                 true,
-//                 UnorderedList('-'),
-//                 false,
-//             )]),
-//             1,
-//         );
-//     }
-//     #[test]
-//     fn test_cnbs_continue_list_item_2() {
-//         test_cnbs(
-//             &mut Document(vec![List(
-//                 vec![ListItem(vec![ThematicBreak], true, 2)],
-//                 true,
-//                 OrderedList('.', 2),
-//                 false,
-//             )]),
-//             "123. ",
-//             &mut Document(vec![List(
-//                 vec![
-//                     ListItem(vec![ThematicBreak], true, 2),
-//                     ListItem(vec![], true, 5),
-//                 ],
-//                 true,
-//                 OrderedList('.', 2),
-//                 false,
-//             )]),
-//             5,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_new_list_1() {
-//         test_cnbs(
-//             &mut Document(vec![]),
-//             "123. ",
-//             &mut Document(vec![List(
-//                 vec![ListItem(vec![], true, 5)],
-//                 true,
-//                 OrderedList('.', 123),
-//                 false,
-//             )]),
-//             5,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_new_list_2() {
-//         test_cnbs(
-//             &mut Document(vec![List(
-//                 vec![ListItem(vec![ThematicBreak], true, 2)],
-//                 true,
-//                 OrderedList('.', 2),
-//                 false,
-//             )]),
-//             " -  ",
-//             &mut Document(vec![
-//                 List(
-//                     vec![ListItem(vec![ThematicBreak], true, 2)],
-//                     true,
-//                     OrderedList('.', 2),
-//                     false,
-//                 ),
-//                 List(
-//                     vec![ListItem(vec![], true, 3)],
-//                     true,
-//                     UnorderedList('-'),
-//                     false,
-//                 ),
-//             ]),
-//             4,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_atx_heading_1() {
-//         test_cnbs(
-//             &mut Document(vec![]),
-//             "#",
-//             &mut Document(vec![Heading(Inline::new(vec![]), 1)]),
-//             1,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_atx_heading_2() {
-//         test_cnbs(
-//             &mut Document(vec![]),
-//             "  #           #       ",
-//             &mut Document(vec![Heading(Inline::new(vec![]), 1)]),
-//             22,
-//         );
-//     }
-//
-//     #[test]
-//     fn test_cnbs_atx_heading_3() {
-//         test_cnbs(
-//             &mut Document(vec![]),
-//             "  #           #       hello # ",
-//             &mut Document(vec![Heading(
-//                 Inline::new("#       hello".chars().collect()),
-//                 1,
-//             )]),
-//             30,
-//         );
-//     }
-// }

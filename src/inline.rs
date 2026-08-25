@@ -7,7 +7,9 @@ use crate::peekable_char_indices::*;
 use core::panic;
 use std::arch::aarch64;
 use std::collections::{HashMap, VecDeque};
+use std::iter;
 use std::iter::Peekable;
+use std::mem::swap;
 use std::str::CharIndices;
 use std::{mem, vec};
 
@@ -133,26 +135,15 @@ impl InlineContent {
     }
 }
 
-pub enum LinkType {
-    /// optional link destination, optional link title.
-    /// the char offsets are given relative to the start of text,
-    /// the caller needs to adjust these to the actual char_ptr in
-    /// the full chars vector.
-    InlineLink(Option<(usize, usize)>, Option<(usize, usize)>),
-    ReferenceLink,
-    CollapsedReferenceLink,
-    ShortcutReferenceLink,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-enum InlineTextComponent {
+#[derive(Debug, Clone)]
+enum InlineTextComponent<'a> {
     /// Total_count,Count_consumed, potential_opener, potential_closer
     Asts(usize, usize, bool, bool),
     /// Total_count,Count_consumed, potential_opener, potential_closer
     Unds(usize, usize, bool, bool),
-    ImgOpen(bool),
+    ImgOpen(bool, PeekableCharIndices<'a>),
     /// active
-    LinkOpen(bool),
+    LinkOpen(bool, PeekableCharIndices<'a>),
     BrackClose,
     /// Total_count
     BackTick(usize),
@@ -163,15 +154,20 @@ enum InlineTextComponent {
     CompletedContent(InlineContent),
 }
 
-impl InlineTextComponent {
-    fn to_text_comp(self) -> InlineTextComponent {
+impl<'a> InlineTextComponent<'a> {
+    fn to_text_comp(&mut self) -> InlineTextComponent<'a> {
         match self {
             Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
-                TextualContent(total - consumed)
+                TextualContent(*total - *consumed)
             }
-            BackTick(count) => TextualContent(count),
-            ImgOpen(_) => TextualContent(2),
-            TextualContent(_) | CompletedContent(_) => self,
+            BackTick(count) => TextualContent(*count),
+            ImgOpen(..) => TextualContent(2),
+            TextualContent(count) => TextualContent(*count),
+            CompletedContent(ic) => {
+                let mut new_ic = InlineContent::Dummy;
+                mem::swap(&mut new_ic, ic);
+                CompletedContent(new_ic)
+            }
             _ => TextualContent(1),
         }
     }
@@ -181,7 +177,7 @@ impl InlineTextComponent {
                 Text(char_offset, char_offset + (*total - *consumed))
             }
             BackTick(count) | TextualContent(count) => Text(char_offset, char_offset + *count),
-            ImgOpen(_) => Text(char_offset, char_offset + 2),
+            ImgOpen(..) => Text(char_offset, char_offset + 2),
             CompletedContent(c) => {
                 let mut dummy = Dummy;
                 mem::swap(c, &mut dummy);
@@ -192,22 +188,22 @@ impl InlineTextComponent {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct DLLnode {
+#[derive(Debug, Clone)]
+struct DLLnode<'a> {
     //this indexes into the string at the start of a char, the design of the program should
     //guarantee that this doesnt panic. Namely by only considering usizes that come
     //immediately from a char_indices() and only subtracting from that offset when the character before that is known.
     beginning_char_index: usize,
-    inline_component: InlineTextComponent,
+    inline_component: InlineTextComponent<'a>,
     index_of_prev: Option<usize>,
     index_of_next: Option<usize>,
     index_of_this: usize, // this is helpful for getting around borrow checker shenanigans
 }
 
-impl DLLnode {
+impl<'a> DLLnode<'a> {
     fn new(
         begin_index: usize,
-        component: InlineTextComponent,
+        component: InlineTextComponent<'a>,
         prev_index: Option<usize>,
         next_index: Option<usize>,
         this_index: usize,
@@ -224,18 +220,18 @@ impl DLLnode {
 
 // we will be approxiamating a double linked list in rust by having each item in the list keep
 // track of the index of the next item.
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct FakeDelimiterDLL {
+#[derive(Debug, Clone)]
+struct FakeDelimiterDLL<'a> {
     // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
-    dl_stack: Vec<DLLnode>,
+    dl_stack: Vec<DLLnode<'a>>,
     // Since we only push to the dll at the beginning, we do not need to keep track of
     // "freeing" things for later. (monotonic?)
     initial_index: Option<usize>,
     final_index: Option<usize>,
 }
 
-impl FakeDelimiterDLL {
-    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent) {
+impl<'a> FakeDelimiterDLL<'a> {
+    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent<'a>) {
         if self.initial_index.is_none() {
             self.initial_index = Some(self.dl_stack.len());
             self.final_index = Some(self.dl_stack.len());
@@ -263,7 +259,7 @@ impl FakeDelimiterDLL {
         self.initial_index.map(|i| &self.dl_stack[i])
     }
 
-    fn get_first_mut(&mut self) -> Option<&mut DLLnode> {
+    fn get_first_mut(&mut self) -> Option<&mut DLLnode<'a>> {
         self.initial_index.map(|i| &mut self.dl_stack[i])
     }
 
@@ -271,7 +267,7 @@ impl FakeDelimiterDLL {
         self.final_index.map(|i| &self.dl_stack[i])
     }
 
-    fn get_last_mut(&mut self) -> Option<&mut DLLnode> {
+    fn get_last_mut(&mut self) -> Option<&mut DLLnode<'a>> {
         self.final_index.map(|i| &mut self.dl_stack[i])
     }
 
@@ -279,7 +275,7 @@ impl FakeDelimiterDLL {
         &self.dl_stack[index]
     }
 
-    fn get_mut(&mut self, index: usize) -> &mut DLLnode {
+    fn get_mut(&mut self, index: usize) -> &mut DLLnode<'a> {
         &mut self.dl_stack[index]
     }
 
@@ -287,7 +283,7 @@ impl FakeDelimiterDLL {
         node.index_of_next.map(|i| &self.dl_stack[i])
     }
 
-    fn get_next_mut(&mut self, node: &DLLnode) -> Option<&mut DLLnode> {
+    fn get_next_mut(&mut self, node: &DLLnode) -> Option<&mut DLLnode<'a>> {
         node.index_of_next.map(|i| &mut self.dl_stack[i])
     }
 
@@ -306,7 +302,7 @@ impl FakeDelimiterDLL {
         bottom_node_index: usize,
         top_node_index: usize,
         begin_char_index: usize,
-        item: InlineTextComponent,
+        item: InlineTextComponent<'a>,
     ) {
         self.dl_stack.push(DLLnode {
             beginning_char_index: begin_char_index,
@@ -325,7 +321,7 @@ impl FakeDelimiterDLL {
         bottom_node_index: usize,
         top_node_index: usize,
         begin_char_index: usize,
-        item: InlineTextComponent,
+        item: InlineTextComponent<'a>,
     ) -> usize {
         let new_prev = self.get_index_of_prev(bottom_node_index);
         let new_next = self.get_index_of_next(top_node_index);
@@ -397,11 +393,11 @@ impl FakeDelimiterDLL {
 
 struct FakeDLLIter<'a> {
     index: Option<usize>,
-    collection: &'a FakeDelimiterDLL,
+    collection: &'a FakeDelimiterDLL<'a>,
 }
 
 impl<'a> Iterator for FakeDLLIter<'a> {
-    type Item = &'a DLLnode;
+    type Item = &'a DLLnode<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index.is_some() {
@@ -533,7 +529,8 @@ pub fn parse_inline(
                             text_begin = start_pos + closing_tick_count;
                             break 'search_for_matching_tc;
                         }
-                    } else if " \n".contains(c) {
+                    }
+                    if " \n".contains(c) {
                         last_is_space = true;
                     } else {
                         last_is_space = false;
@@ -593,7 +590,7 @@ pub fn parse_inline(
             '!' => {
                 if char_iter.next_if_char_eq('[').is_some() {
                     add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                    delimit_stack.push_back(char_index, ImgOpen(true));
+                    delimit_stack.push_back(char_index, ImgOpen(true, char_iter.clone()));
                     text_begin = char_iter.offset();
                     preceding_char = '[';
                 } else {
@@ -602,41 +599,64 @@ pub fn parse_inline(
             }
             '[' => {
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                delimit_stack.push_back(char_index, LinkOpen(true));
+                delimit_stack.push_back(char_index, LinkOpen(true, char_iter.clone()));
                 text_begin = char_index + 1;
                 preceding_char = '[';
             }
             ']' => {
                 // do the back search thing.
-                add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                delimit_stack.push_back(char_index, BrackClose);
-                text_begin = char_index + 1;
+                let mut matched_node_op = delimit_stack.get_last_mut();
+
+                while let Some(ref matched_node) = matched_node_op {
+                    if matches!(matched_node.inline_component, LinkOpen(..))
+                        || matches!(matched_node.inline_component, ImgOpen(..))
+                    {
+                        break;
+                    }
+                    matched_node_op = matched_node.index_of_prev.map(|i| delimit_stack.get_mut(i));
+                }
+
+                let Some(matched_node) = matched_node_op else {
+                    add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                    delimit_stack.push_back(char_index, BrackClose);
+                    text_begin = char_index + 1;
+                    continue;
+                };
+                let matched_node_itc = &mut matched_node.inline_component;
+                if matches!(matched_node_itc, LinkOpen(false, ..))
+                    || matches!(matched_node_itc, ImgOpen(false, ..))
+                {
+                    matched_node.inline_component = matched_node_itc.to_text_comp();
+                    add_text_to_stack(&mut delimit_stack, text_begin, char_index);
+                    delimit_stack.push_back(char_index, BrackClose);
+                    text_begin = char_index + 1;
+                    continue;
+                }
+                let is_image = matches!(matched_node_itc, ImgOpen(..));
+                // we have found one and it is active
+                let link_iter = match matched_node_itc {
+                    LinkOpen(true, iter) | ImgOpen(true, iter) => iter,
+                    _ => unreachable!(),
+                };
             }
             '<' => {
                 //eagerly try to make autolink or html,
-                // dbg!("trying to make new angle bracket thing");
-                dbg!(&char_index);
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                 let mut autolink_iter = char_iter.clone();
                 let mut html_iter = char_iter.clone();
-                if let Some((chars_eaten, is_email)) = parse_autolink(&mut autolink_iter) {
+                if let Some((final_offset, is_email)) = parse_autolink(&mut autolink_iter) {
                     delimit_stack.push_back(
                         char_index,
-                        CompletedContent(AutoLink(
-                            (char_index + 1, char_index + chars_eaten - 1),
-                            is_email,
-                        )),
+                        CompletedContent(AutoLink((char_index + 1, final_offset - 1), is_email)),
                     );
                     char_iter = autolink_iter;
                     text_begin = char_iter.offset();
                     preceding_char = '>'
-                } else if let Some(chars_eaten) = parse_html_tag(&mut html_iter) {
-                    delimit_stack.push_back(
-                        char_index,
-                        CompletedContent(HTMLTag((char_index, char_index + chars_eaten))),
-                    );
+                } else if let Some(tag_end) = parse_html_tag(&mut html_iter) {
+                    delimit_stack
+                        .push_back(char_index, CompletedContent(HTMLTag((char_index, tag_end))));
                     char_iter = html_iter;
-                    text_begin = char_index + chars_eaten;
+                    text_begin = tag_end;
                     preceding_char = '>'
                 } else {
                     add_text_to_stack(&mut delimit_stack, char_index, char_index + 1);
