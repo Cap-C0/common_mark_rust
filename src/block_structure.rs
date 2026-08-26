@@ -9,7 +9,7 @@ use crate::inline::*;
 use crate::parsers::*;
 use crate::peekable_char_indices::PeekableCharIndices;
 
-type LRDTable = HashMap<String, (String, String)>;
+pub type LRDTable = HashMap<String, (String, String)>;
 
 #[derive(Debug, Clone)]
 struct ParsingState<'a> {
@@ -191,7 +191,7 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     let Some(line_0) = lines.next() else {
         return (document, lrd_table);
     };
-    dbg!(line_0);
+    // dbg!(line_0);
     let mut parsing_state = ParsingState {
         document: document,
         lrd_table: lrd_table,
@@ -947,18 +947,17 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
     // obd is unmodified at this point, since we know we are not in a blank line at  this point,
     // that means that *something* will eventually get added to list item
     let mut depth_of_list_being_added_to = None;
-    if let (ListItem(..), depth) = dbg!(
-        parsing_state
-            .document
-            .get_general_container(parsing_state.open_block_depth)
-    ) {
+    if let (ListItem(..), depth) = parsing_state
+        .document
+        .get_general_container(parsing_state.open_block_depth)
+    {
         depth_of_list_being_added_to = Some(depth - 1);
     }
 
     if parsing_state.line_state.space_from_last_structure <= 3 {
         // First check for SetextHeading
         // c_0 is first non space character after offset
-        dbg!(&parsing_state.line_state);
+        // dbg!(&parsing_state.line_state);
         let c_0 = parsing_state.line_state.peek().unwrap();
         'setext_check: {
             if parsing_state.open_par_above && "-=".contains(c_0) {

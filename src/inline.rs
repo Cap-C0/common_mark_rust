@@ -1,7 +1,10 @@
+use crate::block_structure::LRDTable;
 use crate::chars::*;
+use crate::inline::InlineContent::InlineLink;
 use crate::inline::InlineContent::*;
 use crate::inline::InlineTextComponent::*;
-use crate::inline::LinkType::{InlineLink, ReferenceLink};
+use crate::parsers::ReferenceLinkType::Collapsed;
+use crate::parsers::ReferenceLinkType::Full;
 use crate::parsers::*;
 use crate::peekable_char_indices::*;
 use core::panic;
@@ -39,15 +42,15 @@ impl Inline {
         }
     }
 
-    pub fn fill_content(&mut self, lrd_table: &HashMap<String, (String, String)>) {
+    pub fn fill_content(&mut self, lrd_table: &LRDTable) {
         // dbg!("called_fill_content");
         assert!(self.content.is_empty());
         self.content = parse_inline(&self.string, lrd_table)
     }
 
-    pub fn to_html(&self, string_builder: &mut String) {
+    pub fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable) {
         for ic in &self.content {
-            ic.to_html(&self.string, string_builder);
+            ic.to_html(&self.string, string_builder, lrd_table);
         }
     }
 }
@@ -62,11 +65,17 @@ pub enum InlineContent {
     Text(usize, usize),
     Emph(Vec<InlineContent>),
     Strong(Vec<InlineContent>),
-    /// href, title, link_text
+    /// is_image, href, title, link_text
     //TODO: make this work with reference links
-    Link((usize, usize), (usize, usize), Vec<InlineContent>),
+    InlineLink(
+        bool,
+        Option<(usize, usize)>,
+        Option<(usize, usize)>,
+        Vec<InlineContent>,
+    ),
+    ReferenceLink(bool, String, Vec<InlineContent>),
     /// src, title, link_text
-    Image((usize, usize), (usize, usize), Vec<InlineContent>),
+    // Image((usize, usize), (usize, usize), Vec<InlineContent>),
     /// href and text, is_email
     AutoLink((usize, usize), bool),
     /// start, end char index (exclusive)
@@ -77,7 +86,7 @@ pub enum InlineContent {
 }
 
 impl InlineContent {
-    pub fn to_html(&self, string_array: &str, string_builder: &mut String) {
+    pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
         match self {
             Softbreak => string_builder.push_str("\n"),
             Hardbreak => string_builder.push_str("<br />\n"),
@@ -87,19 +96,43 @@ impl InlineContent {
             Emph(inline_contents) => {
                 string_builder.push_str("<em>");
                 for ic in inline_contents {
-                    ic.to_html(string_array, string_builder);
+                    ic.to_html(string_array, string_builder, lrd_table);
                 }
                 string_builder.push_str("</em>");
             }
             Strong(inline_contents) => {
                 string_builder.push_str("<strong>");
                 for ic in inline_contents {
-                    ic.to_html(string_array, string_builder);
+                    ic.to_html(string_array, string_builder, lrd_table);
                 }
                 string_builder.push_str("</strong>");
             }
-            Link(_, _, inline_contents) => todo!(),
-            Image(_, _, inline_contents) => todo!(),
+            InlineLink(is_image, dest_op, tit_op, inline_contents) => {
+                if *is_image {
+                } else {
+                    string_builder.push_str("<a href=\"");
+                    if let Some((start, end)) = dest_op {
+                        for c in string_array[*start..*end].chars() {
+                            push_character_in_uri(c, string_builder);
+                        }
+                    }
+                    string_builder.push('\"');
+                    if let Some((start, end)) = tit_op {
+                        string_builder.push_str(" title=\"");
+                        push_chars_with_entities_and_bs(
+                            &string_array[*start..*end],
+                            string_builder,
+                        );
+                        string_builder.push('\"');
+                    }
+                    string_builder.push('>');
+                    for ic in inline_contents {
+                        ic.to_html(string_array, string_builder, lrd_table);
+                    }
+                    string_builder.push_str("</a>");
+                }
+            }
+            ReferenceLink(is_image, normalized_label, inline_contents) => todo!(),
             AutoLink((first_char, last_char), is_email) => {
                 string_builder.push_str("<a href=\"");
                 if *is_email {
@@ -141,9 +174,9 @@ enum InlineTextComponent<'a> {
     Asts(usize, usize, bool, bool),
     /// Total_count,Count_consumed, potential_opener, potential_closer
     Unds(usize, usize, bool, bool),
-    ImgOpen(bool, PeekableCharIndices<'a>),
+    ImgOpen(bool),
     /// active
-    LinkOpen(bool, PeekableCharIndices<'a>),
+    LinkOpen(bool),
     BrackClose,
     /// Total_count
     BackTick(usize),
@@ -152,6 +185,7 @@ enum InlineTextComponent<'a> {
     /// Offset to last char (exclusive)
     TextualContent(usize),
     CompletedContent(InlineContent),
+    Fake(&'a str),
 }
 
 impl<'a> InlineTextComponent<'a> {
@@ -421,10 +455,7 @@ impl<'a> Iterator for FakeDLLIter<'a> {
 //
 // Indentation and underlying structures like quotes (>) make this a bit harder to think about
 // for now, I will be cloning the strings from the source string into the Inline structs.
-pub fn parse_inline(
-    inline_str: &str,
-    lrd_table: &HashMap<String, (String, String)>,
-) -> Vec<InlineContent> {
+pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent> {
     // pointer, _, offset_to_next, offset_to_prev
     // dbg!("called parse inline!");
     let mut delimit_stack = FakeDelimiterDLL {
@@ -590,7 +621,7 @@ pub fn parse_inline(
             '!' => {
                 if char_iter.next_if_char_eq('[').is_some() {
                     add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                    delimit_stack.push_back(char_index, ImgOpen(true, char_iter.clone()));
+                    delimit_stack.push_back(char_index, ImgOpen(true));
                     text_begin = char_iter.offset();
                     preceding_char = '[';
                 } else {
@@ -599,12 +630,13 @@ pub fn parse_inline(
             }
             '[' => {
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                delimit_stack.push_back(char_index, LinkOpen(true, char_iter.clone()));
+                delimit_stack.push_back(char_index, LinkOpen(true));
                 text_begin = char_index + 1;
                 preceding_char = '[';
             }
             ']' => {
                 // do the back search thing.
+                add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                 let mut matched_node_op = delimit_stack.get_last_mut();
 
                 while let Some(ref matched_node) = matched_node_op {
@@ -634,10 +666,96 @@ pub fn parse_inline(
                 }
                 let is_image = matches!(matched_node_itc, ImgOpen(..));
                 // we have found one and it is active
-                let link_iter = match matched_node_itc {
-                    LinkOpen(true, iter) | ImgOpen(true, iter) => iter,
-                    _ => unreachable!(),
-                };
+                // let link_content_iter = match matched_node_itc {
+                //     LinkOpen(true, iter) | ImgOpen(true, iter) => iter.clone(),
+                //     _ => unreachable!(),
+                // };
+
+                let mut _link_made = false;
+                let mut try_to_inline_link_iter = char_iter.clone();
+                let mut try_to_reference_link_iter = char_iter.clone();
+                if let Some((dest_op, tit_op)) =
+                    dbg!(parse_inline_suffix(&mut try_to_inline_link_iter))
+                {
+                    let bci = matched_node.beginning_char_index;
+                    let link_displayed =
+                        process_emphasis(Some(matched_node.index_of_this), &mut delimit_stack);
+                    delimit_stack.push_back(
+                        bci,
+                        CompletedContent(InlineLink(is_image, dest_op, tit_op, link_displayed)),
+                    );
+                    char_iter = try_to_inline_link_iter;
+                    text_begin = char_iter.offset();
+                    _link_made = true;
+                } else if let Some(rlt) = parse_reference_link(&mut try_to_reference_link_iter) {
+                    match rlt {
+                        Full((start, end)) => {
+                            let norm_lab = normalize_label(&inline_str[start..end]);
+                            if lrd_table.contains_key(&norm_lab) {
+                                let bci = matched_node.beginning_char_index;
+                                let link_displayed = process_emphasis(
+                                    Some(matched_node.index_of_this),
+                                    &mut delimit_stack,
+                                );
+                                delimit_stack.push_back(
+                                    bci,
+                                    CompletedContent(ReferenceLink(
+                                        is_image,
+                                        norm_lab,
+                                        link_displayed,
+                                    )),
+                                );
+                                char_iter = try_to_reference_link_iter;
+                                text_begin = char_iter.offset();
+                                _link_made = true;
+                            }
+                        }
+                        Collapsed => {
+                            let norm_lab = normalize_label(
+                                &inline_str[matched_node.beginning_char_index..char_iter.offset()],
+                            );
+                            if lrd_table.contains_key(&norm_lab) {
+                                let bci = matched_node.beginning_char_index;
+                                let link_displayed = process_emphasis(
+                                    Some(matched_node.index_of_this),
+                                    &mut delimit_stack,
+                                );
+                                delimit_stack.push_back(
+                                    bci,
+                                    CompletedContent(ReferenceLink(
+                                        is_image,
+                                        norm_lab,
+                                        link_displayed,
+                                    )),
+                                );
+                                char_iter = try_to_reference_link_iter;
+                                text_begin = char_iter.offset();
+                                _link_made = true;
+                            }
+                        }
+                    }
+                } else {
+                    // try for a shortcut link.
+                    let norm_lab = normalize_label(
+                        &inline_str[matched_node.beginning_char_index..char_iter.offset()],
+                    );
+                    if lrd_table.contains_key(&norm_lab) {
+                        let bci = matched_node.beginning_char_index;
+                        let link_displayed =
+                            process_emphasis(Some(matched_node.index_of_this), &mut delimit_stack);
+                        delimit_stack.push_back(
+                            bci,
+                            CompletedContent(ReferenceLink(is_image, norm_lab, link_displayed)),
+                        );
+                        text_begin = char_iter.offset();
+                        _link_made = true;
+                    }
+                }
+                if is_image {
+                    //disable earlier link openers
+                }
+                // if !link_made {
+                // }
             }
             '<' => {
                 //eagerly try to make autolink or html,
@@ -689,6 +807,8 @@ fn process_emphasis(
     stack: &mut FakeDelimiterDLL,
 ) -> Vec<InlineContent> {
     // dbg!("processing emph");
+    dbg!(&stack);
+    dbg!(&stack_bottom);
     let mut current_index_op =
         stack_bottom.map_or(stack.initial_index, |i| stack.get(i).index_of_next);
     let stack_bottom_char_index =
@@ -977,6 +1097,10 @@ fn process_emphasis(
                 .to_inline_content(nte.beginning_char_index),
         );
         ntei_op = nte.index_of_next;
+    }
+    //then remove everything above
+    if let Some(sb_index) = stack_bottom {
+        stack.delete_stack_above_including(sb_index);
     }
     // dbg!(&out);
     out

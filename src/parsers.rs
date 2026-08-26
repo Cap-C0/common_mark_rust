@@ -1,4 +1,76 @@
-use crate::peekable_char_indices::*;
+use crate::{
+    parsers::ReferenceLinkType::{Collapsed, Full},
+    peekable_char_indices::*,
+};
+
+// pub enum LinkType {
+//     /// optional link destination, optional link title.
+//     /// the char offsets are given relative to the start of text,
+//     /// the caller needs to adjust these to the actual char_ptr in
+//     /// the full chars vector.
+//     InlineLink(Option<(usize, usize)>, Option<(usize, usize)>),
+//     ReferenceLink,
+//     CollapsedReferenceLink,
+//     ShortcutReferenceLink,
+// }
+
+// pub fn parse_link(char_iter: &mut PeekableCharIndices) -> Option<LinkType> {}
+
+pub fn parse_inline_suffix(
+    char_iter: &mut PeekableCharIndices,
+) -> Option<(Option<(usize, usize)>, Option<(usize, usize)>)> {
+    char_iter.next_if_char_eq('(')?;
+
+    char_iter.consume_while(|c| " \t\n".contains(c));
+    if char_iter.next_if_char_eq(')').is_some() {
+        return Some((None, None));
+    }
+
+    let dest_start = char_iter.offset();
+    let (dest_end, is_bracketed) = parse_link_destination(char_iter)?;
+    let dest_adjust = if is_bracketed { 1 } else { 0 };
+    let dest_chars = if dest_start + (2 * dest_adjust) < dest_end {
+        Some((dest_start + dest_adjust, dest_end - dest_adjust))
+    } else {
+        None
+    };
+    let post_dest_offset = char_iter.offset();
+    char_iter.consume_while(|c| " \t\n".contains(c));
+
+    if char_iter.next_if_char_eq(')').is_some() {
+        return Some((dest_chars, None));
+    }
+
+    //dest and title must have spaces seperating them
+    if char_iter.offset() == post_dest_offset {
+        return None;
+    }
+
+    let tit_start = char_iter.offset();
+    let tit_end = parse_link_title(char_iter)?;
+    let tit_chars = Some((tit_start + 1, tit_end - 1));
+
+    char_iter.consume_while(|c| " \t\n".contains(c));
+
+    char_iter.next_if_char_eq(')')?;
+
+    Some((dest_chars, tit_chars))
+}
+
+pub enum ReferenceLinkType {
+    Full((usize, usize)),
+    Collapsed,
+}
+
+pub fn parse_reference_link(char_iter: &mut PeekableCharIndices) -> Option<ReferenceLinkType> {
+    char_iter.next_if_char_eq('[')?;
+    if char_iter.next_if_char_eq(']').is_some() {
+        return Some(Collapsed);
+    }
+    let start_index = char_iter.offset();
+    let end_index = parse_link_label(char_iter)? - 1;
+    Some(Full((start_index, end_index)))
+}
 
 pub fn parse_link_label(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     // let (_, c) = char_iter.next()?;
@@ -78,15 +150,18 @@ pub fn parse_link_destination(char_iter: &mut PeekableCharIndices) -> Option<(us
     }
 
     let mut paren_stack = 0;
-    while let Some(c) = char_iter.next_if(|c| !" \t".contains(c) && !c.is_ascii_control()) {
+    while let Some(c) = char_iter
+        .next_if(|c| !" \t".contains(c) && !c.is_ascii_control() && (c != ')' || paren_stack > 0))
+    {
         if c == '(' {
             paren_stack += 1;
         } else if c == ')' {
-            if paren_stack > 0 {
-                paren_stack -= 1;
-            } else {
-                return None;
-            }
+            paren_stack -= 1;
+            // if paren_stack > 0 {
+            //     paren_stack -= 1;
+            // } else {
+            //     panic!()
+            // }
         } else if c == '\\'
             && let Some(cpbs) = char_iter.peek()
         {

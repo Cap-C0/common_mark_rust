@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     ast_types::{Block::*, ListType::*},
+    block_structure::LRDTable,
     chars::{push_chars_with_entities_and_bs, push_html_reserved_char},
     inline::{Inline, InlineContent, parse_inline},
 };
@@ -225,17 +226,22 @@ impl Block {
         }
     }
 
-    pub fn to_html(&self) -> String {
+    pub fn to_html(&self, lrd_table: &LRDTable) -> String {
         let mut str_out = String::new();
-        self.to_html_helper(false, &mut str_out);
+        self.to_html_helper(false, &mut str_out, lrd_table);
         str_out
     }
 
-    fn to_html_helper(&self, in_tight_list: bool, string_builder: &mut String) {
+    fn to_html_helper(
+        &self,
+        in_tight_list: bool,
+        string_builder: &mut String,
+        lrd_table: &LRDTable,
+    ) {
         match self {
             Document(blocks) => {
                 for b in blocks {
-                    b.to_html_helper(false, string_builder);
+                    b.to_html_helper(false, string_builder, lrd_table);
                 }
             }
             BlockQuote(blocks, _) => {
@@ -244,7 +250,7 @@ impl Block {
                 }
                 string_builder.push_str("<blockquote>\n");
                 for b in blocks {
-                    b.to_html_helper(false, string_builder);
+                    b.to_html_helper(false, string_builder, lrd_table);
                 }
                 string_builder.push_str("</blockquote>\n");
             }
@@ -260,14 +266,14 @@ impl Block {
                             string_builder.push_str("<ol>\n");
                         }
                         for b in blocks {
-                            b.to_html_helper(*is_tight, string_builder);
+                            b.to_html_helper(*is_tight, string_builder, lrd_table);
                         }
                         string_builder.push_str("</ol>\n");
                     }
                     UnorderedList(_) => {
                         string_builder.push_str("<ul>\n");
                         for b in blocks {
-                            b.to_html_helper(*is_tight, string_builder);
+                            b.to_html_helper(*is_tight, string_builder, lrd_table);
                         }
                         string_builder.push_str("</ul>\n");
                     }
@@ -276,7 +282,7 @@ impl Block {
             ListItem(blocks, ..) => {
                 string_builder.push_str("<li>");
                 for b in blocks {
-                    b.to_html_helper(in_tight_list, string_builder);
+                    b.to_html_helper(in_tight_list, string_builder, lrd_table);
                 }
                 string_builder.push_str("</li>\n");
             }
@@ -285,7 +291,7 @@ impl Block {
                     string_builder.push('\n');
                 }
                 string_builder.push_str(&format!("<h{}>", h));
-                il.to_html(string_builder);
+                il.to_html(string_builder, lrd_table);
                 string_builder.push_str(&format!("</h{}>\n", h));
             }
             Paragraph(il, _) => {
@@ -295,7 +301,7 @@ impl Block {
                     }
                     string_builder.push_str("<p>");
                 }
-                il.to_html(string_builder);
+                il.to_html(string_builder, lrd_table);
                 if !in_tight_list && il.string.len() > 0 {
                     string_builder.push_str("</p>\n");
                 }

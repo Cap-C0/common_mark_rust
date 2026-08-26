@@ -28,5 +28,5 @@ pub fn markdown_to_html(markdown: &str) -> String {
 
     dbg!(&document);
 
-    document.to_html()
+    document.to_html(&lrd_table)
 }
