@@ -2,17 +2,14 @@ use quote::{format_ident, quote};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
-use std::fmt;
 use std::fmt::Debug;
 use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::BufRead;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 use std::str::Chars;
-use syn::{LitStr, parse_macro_input};
 
 #[derive(Serialize, Deserialize)]
 struct TestCase {
@@ -49,15 +46,8 @@ impl TrieNode {
         current.value = Some(value);
     }
 
-    pub fn get_child(&self, c: char) -> Option<&Self> {
-        self.children.get(&c)
-    }
-
     pub fn to_phf_code(&self, string_builder: &mut String) {
-        string_builder.push_str(
-            "StaticTrieNode{
-            children: phf_map!{",
-        );
+        string_builder.push_str("StaticTrieNode{\nchildren: phf_map!{");
         for (character, child) in self.children.iter() {
             string_builder.push_str(&format!("'{}' => ", character));
             child.to_phf_code(string_builder);
@@ -77,10 +67,10 @@ impl TrieNode {
     }
 }
 
-struct StaticTrieNode {
-    children: phf::Map<char, StaticTrieNode>,
-    value: Option<&'static [char]>,
-}
+// struct StaticTrieNode {
+//     children: phf::Map<char, StaticTrieNode>,
+//     value: Option<&'static [char]>,
+// }
 
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
@@ -130,7 +120,7 @@ fn main() {
     let unicode_data = Path::new("UnicodeData.txt");
     get_file_if_doesnt_exist(
         unicode_data,
-        "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
+        "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt",
     );
 
     if needs_regen(&unicode_data, &unicode_categories_funs_path) {
@@ -199,12 +189,8 @@ fn main() {
         });
 
         let quoted_code = quote! {
-            trait unicode_stuff {
-                fn is_unicode_punctuation(&self) -> bool;
-                fn is_unicode_symbol(&self) -> bool;
-            }
 
-            impl unicode_stuff for char {
+            impl UnicodeCategory for char {
                 fn is_unicode_punctuation(&self) -> bool {
                     #(#punc_ranges)* false
                 }
@@ -223,7 +209,6 @@ fn main() {
     let html_entities_funs = Path::new(&out_dir).join("html_entities.rs");
     let html_entities = Path::new("entities.json");
     get_file_if_doesnt_exist(&html_entities, "https://html.spec.whatwg.org/entities.json");
-
     if needs_regen(&html_entities, &html_entities_funs) {
         let char_maps: HashMap<String, CharacterInfo> =
             serde_json::from_str(&fs::read_to_string(html_entities).unwrap()).unwrap();
@@ -262,6 +247,104 @@ fn main() {
         base_trie.to_phf_code(&mut string_builder);
         string_builder.push_str(";\n");
         fs::write(html_entities_funs, string_builder).unwrap();
+    }
+
+    /* UNICODE CASEFOLD DATA (for punctuations and symbols)*/
+    println!("cargo::rerun-if-changed=UnicodeData.txt");
+    let unicode_case_funs = Path::new(&out_dir).join("unicode_casefold.rs");
+    let unicode_case_data = Path::new("CaseFolding.txt");
+    get_file_if_doesnt_exist(
+        unicode_case_data,
+        "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt",
+    );
+
+    if needs_regen(&unicode_case_data, &unicode_case_funs) {
+        let lines = io::BufReader::new(File::open(unicode_case_data).unwrap()).lines();
+
+        let mut mapping: Vec<(char, Vec<char>)> = vec![];
+
+        for line in lines {
+            let line = line.unwrap();
+            if line.is_empty() || matches!(line.get(0..1), Some("#")) {
+                continue;
+            }
+            let mut split_line = line.split("; ");
+            let uppercase_char =
+                char::from_u32(u32::from_str_radix(split_line.next().unwrap(), 16).unwrap())
+                    .unwrap();
+            let status = split_line.next().unwrap();
+            if !"CF".contains(status) {
+                continue;
+            }
+            let chars_to = split_line
+                .next()
+                .unwrap()
+                .split(' ')
+                .map(|hex_cs| char::from_u32(u32::from_str_radix(hex_cs, 16).unwrap()).unwrap())
+                .collect();
+            mapping.push((uppercase_char, chars_to));
+        }
+        let match_cases = mapping.iter().map(|(uppercase, lowercase)| {
+            let mut lowercase_iter = lowercase.iter();
+            let char_0 = lowercase_iter.next().unwrap();
+            let char_1 = lowercase_iter.next().unwrap_or(&' ');
+            let char_2 = lowercase_iter.next().unwrap_or(&' ');
+            let char_count = lowercase.len();
+
+            quote! {#uppercase =>
+                    UnicodeCaseFoldIter{
+                        chars: [
+                            #char_0,
+                            #char_1,
+                            #char_2
+                        ],
+                        char_count: #char_count,
+                        current_offset: 0,
+                    },
+            }
+        });
+
+        let quoted_code = quote! {
+            // #[derive(Clone)]
+            // struct UnicodeCaseFoldIter {
+            //     chars: [char; 3],
+            //     char_count: usize,
+            //     current_offset: usize,
+            // }
+            //
+            // impl Iterator for UnicodeCaseFoldIter {
+            //     type Item = char;
+            //
+            //     fn next(&mut self) -> Option<Self::Item> {
+            //         if self.current_offset >= self.char_count {
+            //             None
+            //         } else {
+            //             let out = self.chars[self.current_offset];
+            //             self.current_offset += 1;
+            //             Some(out)
+            //         }
+            //     }
+            // }
+            //
+            // trait UnicodeCaseFold {
+            //     fn unicode_case_fold(&self) -> UnicodeCaseFoldIter;
+            // }
+
+            impl UnicodeCaseFold for char {
+                fn unicode_case_fold(&self) -> UnicodeCaseFoldIter {
+                    match self {
+                        #(#match_cases)*
+                        c => UnicodeCaseFoldIter{
+                            chars:[*c,' ', ' '],
+                            char_count: 1,
+                            current_offset: 0,
+                        }
+                    }
+                }
+            }
+        };
+
+        fs::write(unicode_case_funs, quoted_code.to_string()).unwrap();
     }
 }
 

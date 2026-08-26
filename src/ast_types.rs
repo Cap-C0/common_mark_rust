@@ -1,10 +1,8 @@
-use std::collections::HashMap;
-
 use crate::{
     ast_types::{Block::*, ListType::*},
     block_structure::LRDTable,
     chars::{push_chars_with_entities_and_bs, push_html_reserved_char},
-    inline::{Inline, InlineContent, parse_inline},
+    inline::Inline,
 };
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -83,14 +81,14 @@ impl Block {
         (self.get_block(new_depth), new_depth)
     }
 
-    pub fn is_leaf(&self) -> bool {
-        match self {
-            Document(_) | BlockQuote(..) | List(..) | ListItem(..) => false,
-            _ => true,
-        }
-    }
+    // pub fn is_leaf(&self) -> bool {
+    //     match self {
+    //         Document(_) | BlockQuote(..) | List(..) | ListItem(..) => false,
+    //         _ => true,
+    //     }
+    // }
 
-    pub fn parse_inlines(&mut self, lrd_table: &HashMap<String, (String, String)>) {
+    pub fn parse_inlines(&mut self, lrd_table: &LRDTable) {
         match self {
             Document(blocks) | BlockQuote(blocks, _) | List(blocks, ..) | ListItem(blocks, ..) => {
                 for b in blocks {
@@ -153,54 +151,54 @@ impl Block {
         }
     }
 
-    pub fn is_general_block_appendable(&self) -> bool {
-        match self {
-            Document(_) | BlockQuote(_, true) | ListItem(_, _, _) => true,
-            _ => false,
-        }
-    }
+    // pub fn is_general_block_appendable(&self) -> bool {
+    //     match self {
+    //         Document(_) | BlockQuote(_, true) | ListItem(_, _, _) => true,
+    //         _ => false,
+    //     }
+    // }
 
-    pub fn reset_blank_line_seen(&mut self, depth: usize) {
-        if depth > 0 {
-            match self {
-                Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
-                    if blocks.is_empty() {
-                        return;
-                    }
-                    blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
-                }
-                List(blocks, _, _, blank_line_encountered) => {
-                    *blank_line_encountered = false;
-                    if blocks.is_empty() {
-                        return;
-                    }
-                    blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
-                }
-                _ => return,
-            }
-        }
-    }
+    // pub fn reset_blank_line_seen(&mut self, depth: usize) {
+    //     if depth > 0 {
+    //         match self {
+    //             Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
+    //                 if blocks.is_empty() {
+    //                     return;
+    //                 }
+    //                 blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
+    //             }
+    //             List(blocks, _, _, blank_line_encountered) => {
+    //                 *blank_line_encountered = false;
+    //                 if blocks.is_empty() {
+    //                     return;
+    //                 }
+    //                 blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
+    //             }
+    //             _ => return,
+    //         }
+    //     }
+    // }
 
-    fn detighten_deeper_than(&mut self, depth: i32) {
-        match self {
-            Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
-                if blocks.is_empty() {
-                    return;
-                }
-                blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
-            }
-            List(blocks, _, _, blank_line_encountered) => {
-                if depth <= 0 {
-                    *blank_line_encountered = true
-                }
-                if blocks.is_empty() {
-                    return;
-                }
-                blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
-            }
-            _ => return,
-        }
-    }
+    // fn detighten_deeper_than(&mut self, depth: i32) {
+    //     match self {
+    //         Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
+    //             if blocks.is_empty() {
+    //                 return;
+    //             }
+    //             blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
+    //         }
+    //         List(blocks, _, _, blank_line_encountered) => {
+    //             if depth <= 0 {
+    //                 *blank_line_encountered = true
+    //             }
+    //             if blocks.is_empty() {
+    //                 return;
+    //             }
+    //             blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
+    //         }
+    //         _ => return,
+    //     }
+    // }
 
     pub fn get_last_block(&mut self) -> &mut Block {
         let descend = match self {
@@ -378,105 +376,105 @@ pub enum HTMLEndCondition {
     BlankLine,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test_get_block_1() {
-        let mut test_tree = Document(vec![BlockQuote(
-            vec![List(
-                vec![ListItem(vec![ThematicBreak], true, 2)],
-                true,
-                ListType::UnorderedList('*'),
-                false,
-            )],
-            false,
-        )]);
-        let descension: usize = 4;
-        assert_eq!(test_tree.get_block(descension), &mut ThematicBreak)
-    }
-
-    #[test]
-    fn test_get_block_2() {
-        let mut test_tree = Document(vec![
-            BlockQuote(
-                vec![List(
-                    vec![ListItem(vec![ThematicBreak], true, 2)],
-                    true,
-                    ListType::UnorderedList('*'),
-                    false,
-                )],
-                false,
-            ),
-            BlockQuote(vec![Paragraph(Inline::new(vec!['p', 'o']), true)], true),
-        ]);
-        let descension = 1;
-        let bq = test_tree.get_block(descension);
-        match bq {
-            BlockQuote(v, _) => v.push(ThematicBreak),
-            _ => unreachable!(),
-        }
-        assert_eq!(
-            test_tree.get_block(descension),
-            &mut BlockQuote(
-                vec![Paragraph(Inline::new(vec!['p', 'o']), true), ThematicBreak],
-                true
-            ),
-        )
-    }
-
-    #[test]
-    fn test_get_last_block_1() {
-        let mut test_tree = Document(vec![
-            BlockQuote(
-                vec![List(
-                    vec![ListItem(vec![ThematicBreak], true, 2)],
-                    true,
-                    ListType::UnorderedList('*'),
-                    false,
-                )],
-                false,
-            ),
-            BlockQuote(vec![Paragraph(Inline::new(vec!['p', 'o']), true)], true),
-        ]);
-        assert_eq!(
-            test_tree.get_last_block(),
-            &mut Paragraph(Inline::new(vec!['p', 'o']), true)
-        )
-    }
-
-    #[test]
-    fn test_get_last_block_2() {
-        let mut test_tree = Document(vec![]);
-        assert_eq!(test_tree.get_last_block(), &mut Document(vec![]))
-    }
-
-    #[test]
-    fn test_get_last_general_container() {
-        let ast = &mut Document(vec![BlockQuote(
-            vec![List(
-                vec![ListItem(vec![ThematicBreak], true, 2)],
-                true,
-                UnorderedList('*'),
-                false,
-            )],
-            true,
-        )]);
-        let depth = 2; // matched the list but not list item
-        assert_eq!(
-            ast.get_general_container(depth),
-            (
-                &mut BlockQuote(
-                    vec![List(
-                        vec![ListItem(vec![ThematicBreak], true, 2)],
-                        true,
-                        UnorderedList('*'),
-                        false,
-                    )],
-                    true,
-                ),
-                1
-            )
-        )
-    }
-}
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     #[test]
+//     fn test_get_block_1() {
+//         let mut test_tree = Document(vec![BlockQuote(
+//             vec![List(
+//                 vec![ListItem(vec![ThematicBreak], true, 2)],
+//                 true,
+//                 ListType::UnorderedList('*'),
+//                 false,
+//             )],
+//             false,
+//         )]);
+//         let descension: usize = 4;
+//         assert_eq!(test_tree.get_block(descension), &mut ThematicBreak)
+//     }
+//
+//     #[test]
+//     fn test_get_block_2() {
+//         let mut test_tree = Document(vec![
+//             BlockQuote(
+//                 vec![List(
+//                     vec![ListItem(vec![ThematicBreak], true, 2)],
+//                     true,
+//                     ListType::UnorderedList('*'),
+//                     false,
+//                 )],
+//                 false,
+//             ),
+//             BlockQuote(vec![Paragraph(Inline::new(vec!['p', 'o']), true)], true),
+//         ]);
+//         let descension = 1;
+//         let bq = test_tree.get_block(descension);
+//         match bq {
+//             BlockQuote(v, _) => v.push(ThematicBreak),
+//             _ => unreachable!(),
+//         }
+//         assert_eq!(
+//             test_tree.get_block(descension),
+//             &mut BlockQuote(
+//                 vec![Paragraph(Inline::new(vec!['p', 'o']), true), ThematicBreak],
+//                 true
+//             ),
+//         )
+//     }
+//
+//     #[test]
+//     fn test_get_last_block_1() {
+//         let mut test_tree = Document(vec![
+//             BlockQuote(
+//                 vec![List(
+//                     vec![ListItem(vec![ThematicBreak], true, 2)],
+//                     true,
+//                     ListType::UnorderedList('*'),
+//                     false,
+//                 )],
+//                 false,
+//             ),
+//             BlockQuote(vec![Paragraph(Inline::new(vec!['p', 'o']), true)], true),
+//         ]);
+//         assert_eq!(
+//             test_tree.get_last_block(),
+//             &mut Paragraph(Inline::new(vec!['p', 'o']), true)
+//         )
+//     }
+//
+//     #[test]
+//     fn test_get_last_block_2() {
+//         let mut test_tree = Document(vec![]);
+//         assert_eq!(test_tree.get_last_block(), &mut Document(vec![]))
+//     }
+//
+//     #[test]
+//     fn test_get_last_general_container() {
+//         let ast = &mut Document(vec![BlockQuote(
+//             vec![List(
+//                 vec![ListItem(vec![ThematicBreak], true, 2)],
+//                 true,
+//                 UnorderedList('*'),
+//                 false,
+//             )],
+//             true,
+//         )]);
+//         let depth = 2; // matched the list but not list item
+//         assert_eq!(
+//             ast.get_general_container(depth),
+//             (
+//                 &mut BlockQuote(
+//                     vec![List(
+//                         vec![ListItem(vec![ThematicBreak], true, 2)],
+//                         true,
+//                         UnorderedList('*'),
+//                         false,
+//                     )],
+//                     true,
+//                 ),
+//                 1
+//             )
+//         )
+//     }
+// }

@@ -7,34 +7,20 @@ use crate::parsers::ReferenceLinkType::Collapsed;
 use crate::parsers::ReferenceLinkType::Full;
 use crate::parsers::*;
 use crate::peekable_char_indices::*;
+use crate::string_normalize::normalize_label;
 use core::panic;
-use std::arch::aarch64;
-use std::collections::{HashMap, VecDeque};
-use std::iter;
-use std::iter::Peekable;
-use std::mem::swap;
-use std::str::CharIndices;
 use std::{mem, vec};
 
 include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Inline {
-    // pub chars: Vec<char>,
     pub string: String,
     pub content: Vec<InlineContent>,
 }
 
 impl Inline {
-    pub fn new(chars: Vec<char>) -> Self {
-        Inline {
-            // chars: chars,
-            string: String::new(),
-            content: vec![],
-        }
-    }
-
-    pub fn with_string(str_in: String) -> Self {
+    pub fn new(str_in: String) -> Self {
         Inline {
             // chars: vec![],
             string: str_in,
@@ -58,6 +44,8 @@ impl Inline {
 // we do not need to enforce multiple new line requirements in these parsers as that will be enforced
 // by paragraphs ending at new lines
 
+//TODO: stop holding char_offsets,
+//thats literally what &str is for
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum InlineContent {
     Softbreak,
@@ -88,7 +76,7 @@ pub enum InlineContent {
 impl InlineContent {
     pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
         match self {
-            Softbreak => string_builder.push_str("\n"),
+            Softbreak => string_builder.push('\n'),
             Hardbreak => string_builder.push_str("<br />\n"),
             Text(start, end) => {
                 push_chars_with_entities_and_bs(&string_array[*start..*end], string_builder, false);
@@ -109,6 +97,29 @@ impl InlineContent {
             }
             InlineLink(is_image, dest_op, tit_op, inline_contents) => {
                 if *is_image {
+                    string_builder.push_str("<img src=\"");
+                    if let Some((start, end)) = dest_op {
+                        push_chars_with_entities_and_bs(
+                            &string_array[*start..*end],
+                            string_builder,
+                            true,
+                        );
+                    }
+                    string_builder.push_str("\" alt=\"");
+                    for ic in inline_contents {
+                        ic.to_alt_text(string_array, string_builder);
+                    }
+                    string_builder.push_str("\" ");
+                    if let Some((start, end)) = tit_op {
+                        string_builder.push_str("title=\"");
+                        push_chars_with_entities_and_bs(
+                            &string_array[*start..*end],
+                            string_builder,
+                            false,
+                        );
+                        string_builder.push_str("\" ");
+                    }
+                    string_builder.push_str("/>");
                 } else {
                     string_builder.push_str("<a href=\"");
                     if let Some((start, end)) = dest_op {
@@ -135,7 +146,38 @@ impl InlineContent {
                     string_builder.push_str("</a>");
                 }
             }
-            ReferenceLink(is_image, normalized_label, inline_contents) => todo!(),
+            ReferenceLink(is_image, normalized_label, inline_contents) => {
+                let (dest, tit_op) = lrd_table.get(normalized_label).unwrap();
+                if *is_image {
+                    string_builder.push_str("<img src=\"");
+                    push_chars_with_entities_and_bs(dest, string_builder, true);
+                    string_builder.push_str("\" alt=\"");
+                    for ic in inline_contents {
+                        ic.to_alt_text(string_array, string_builder);
+                    }
+                    string_builder.push_str("\" ");
+                    if let Some(tit_string) = tit_op {
+                        string_builder.push_str("title=\"");
+                        push_chars_with_entities_and_bs(tit_string, string_builder, false);
+                        string_builder.push_str("\" ");
+                    }
+                    string_builder.push_str("/>");
+                } else {
+                    string_builder.push_str("<a href=\"");
+                    push_chars_with_entities_and_bs(dest, string_builder, true);
+                    string_builder.push('\"');
+                    if let Some(tit) = tit_op {
+                        string_builder.push_str(" title=\"");
+                        push_chars_with_entities_and_bs(tit, string_builder, false);
+                        string_builder.push('\"');
+                    }
+                    string_builder.push('>');
+                    for ic in inline_contents {
+                        ic.to_html(string_array, string_builder, lrd_table);
+                    }
+                    string_builder.push_str("</a>");
+                }
+            }
             AutoLink((first_char, last_char), is_email) => {
                 string_builder.push_str("<a href=\"");
                 if *is_email {
@@ -169,10 +211,60 @@ impl InlineContent {
             Dummy => panic!("should not encounter dummy at this point"),
         }
     }
+
+    pub fn to_alt_text(&self, string_array: &str, string_builder: &mut String) {
+        match self {
+            Softbreak => string_builder.push('\n'),
+            Hardbreak => string_builder.push('\n'),
+            Text(start, end) => {
+                push_chars_with_entities_and_bs(&string_array[*start..*end], string_builder, false);
+            }
+            Emph(inline_contents) => {
+                for ic in inline_contents {
+                    ic.to_alt_text(string_array, string_builder);
+                }
+            }
+            Strong(inline_contents) => {
+                for ic in inline_contents {
+                    ic.to_alt_text(string_array, string_builder);
+                }
+            }
+            InlineLink(.., inline_contents) => {
+                for ic in inline_contents {
+                    ic.to_alt_text(string_array, string_builder);
+                }
+            }
+            ReferenceLink(.., inline_contents) => {
+                for ic in inline_contents {
+                    ic.to_alt_text(string_array, string_builder);
+                }
+            }
+            AutoLink((first_char, last_char), ..) => {
+                for c in string_array[*first_char..*last_char].chars() {
+                    push_html_reserved_char(c, string_builder);
+                }
+            }
+            HTMLTag((start, end)) => {
+                for c in string_array[*start..*end].chars() {
+                    string_builder.push(c);
+                }
+            }
+            Code((start, end)) => {
+                for c in string_array[*start..*end].chars() {
+                    if c == '\n' {
+                        push_html_reserved_char(' ', string_builder);
+                    } else {
+                        push_html_reserved_char(c, string_builder);
+                    }
+                }
+            }
+            Dummy => panic!("should not encounter dummy at this point"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-enum InlineTextComponent<'a> {
+enum InlineTextComponent {
     /// Total_count,Count_consumed, potential_opener, potential_closer
     Asts(usize, usize, bool, bool),
     /// Total_count,Count_consumed, potential_opener, potential_closer
@@ -182,38 +274,45 @@ enum InlineTextComponent<'a> {
     LinkOpen(bool),
     BrackClose,
     /// Total_count
-    BackTick(usize),
-    AngleOpen,
-    AngleClose,
     /// Offset to last char (exclusive)
     TextualContent(usize),
     CompletedContent(InlineContent),
-    Fake(&'a str),
 }
 
-impl<'a> InlineTextComponent<'a> {
-    fn to_text_comp(&mut self) -> InlineTextComponent<'a> {
-        match self {
+impl InlineTextComponent {
+    fn to_completed_content(&mut self) {
+        if matches!(self, TextualContent(..) | CompletedContent(..)) {
+            return;
+        }
+        *self = match self {
             Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
                 TextualContent(*total - *consumed)
             }
-            BackTick(count) => TextualContent(*count),
             ImgOpen(..) => TextualContent(2),
-            TextualContent(count) => TextualContent(*count),
-            CompletedContent(ic) => {
-                let mut new_ic = InlineContent::Dummy;
-                mem::swap(&mut new_ic, ic);
-                CompletedContent(new_ic)
-            }
             _ => TextualContent(1),
         }
     }
+    // fn to_text_comp(self) -> InlineTextComponent {
+    //     match self {
+    //         Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
+    //             TextualContent(total - consumed)
+    //         }
+    //         ImgOpen(..) => TextualContent(2),
+    //         TextualContent(count) => TextualContent(*count),
+    //         CompletedContent(ic) => {
+    //             let mut new_ic = InlineContent::Dummy;
+    //             mem::swap(&mut new_ic, ic);
+    //             CompletedContent(new_ic)
+    //         }
+    //         _ => TextualContent(1),
+    //     }
+    // }
     fn to_inline_content(&mut self, char_offset: usize) -> InlineContent {
         match self {
             Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
                 Text(char_offset, char_offset + (*total - *consumed))
             }
-            BackTick(count) | TextualContent(count) => Text(char_offset, char_offset + *count),
+            TextualContent(count) => Text(char_offset, char_offset + *count),
             ImgOpen(..) => Text(char_offset, char_offset + 2),
             CompletedContent(c) => {
                 let mut dummy = Dummy;
@@ -226,21 +325,21 @@ impl<'a> InlineTextComponent<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct DLLnode<'a> {
+struct DLLnode {
     //this indexes into the string at the start of a char, the design of the program should
     //guarantee that this doesnt panic. Namely by only considering usizes that come
     //immediately from a char_indices() and only subtracting from that offset when the character before that is known.
     beginning_char_index: usize,
-    inline_component: InlineTextComponent<'a>,
+    inline_component: InlineTextComponent,
     index_of_prev: Option<usize>,
     index_of_next: Option<usize>,
     index_of_this: usize, // this is helpful for getting around borrow checker shenanigans
 }
 
-impl<'a> DLLnode<'a> {
+impl DLLnode {
     fn new(
         begin_index: usize,
-        component: InlineTextComponent<'a>,
+        component: InlineTextComponent,
         prev_index: Option<usize>,
         next_index: Option<usize>,
         this_index: usize,
@@ -258,17 +357,17 @@ impl<'a> DLLnode<'a> {
 // we will be approxiamating a double linked list in rust by having each item in the list keep
 // track of the index of the next item.
 #[derive(Debug, Clone)]
-struct FakeDelimiterDLL<'a> {
+struct FakeDelimiterDLL {
     // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
-    dl_stack: Vec<DLLnode<'a>>,
+    dl_stack: Vec<DLLnode>,
     // Since we only push to the dll at the beginning, we do not need to keep track of
     // "freeing" things for later. (monotonic?)
     initial_index: Option<usize>,
     final_index: Option<usize>,
 }
 
-impl<'a> FakeDelimiterDLL<'a> {
-    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent<'a>) {
+impl FakeDelimiterDLL {
+    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent) {
         if self.initial_index.is_none() {
             self.initial_index = Some(self.dl_stack.len());
             self.final_index = Some(self.dl_stack.len());
@@ -292,19 +391,19 @@ impl<'a> FakeDelimiterDLL<'a> {
         }
     }
 
-    fn get_first(&self) -> Option<&DLLnode> {
-        self.initial_index.map(|i| &self.dl_stack[i])
-    }
+    // fn get_first(&self) -> Option<&DLLnode> {
+    //     self.initial_index.map(|i| &self.dl_stack[i])
+    // }
+    //
+    // fn get_first_mut(&mut self) -> Option<&mut DLLnode> {
+    //     self.initial_index.map(|i| &mut self.dl_stack[i])
+    // }
+    //
+    // fn get_last(&self) -> Option<&DLLnode> {
+    //     self.final_index.map(|i| &self.dl_stack[i])
+    // }
 
-    fn get_first_mut(&mut self) -> Option<&mut DLLnode<'a>> {
-        self.initial_index.map(|i| &mut self.dl_stack[i])
-    }
-
-    fn get_last(&self) -> Option<&DLLnode> {
-        self.final_index.map(|i| &self.dl_stack[i])
-    }
-
-    fn get_last_mut(&mut self) -> Option<&mut DLLnode<'a>> {
+    fn get_last_mut(&mut self) -> Option<&mut DLLnode> {
         self.final_index.map(|i| &mut self.dl_stack[i])
     }
 
@@ -312,7 +411,7 @@ impl<'a> FakeDelimiterDLL<'a> {
         &self.dl_stack[index]
     }
 
-    fn get_mut(&mut self, index: usize) -> &mut DLLnode<'a> {
+    fn get_mut(&mut self, index: usize) -> &mut DLLnode {
         &mut self.dl_stack[index]
     }
 
@@ -320,26 +419,26 @@ impl<'a> FakeDelimiterDLL<'a> {
         node.index_of_next.map(|i| &self.dl_stack[i])
     }
 
-    fn get_next_mut(&mut self, node: &DLLnode) -> Option<&mut DLLnode<'a>> {
-        node.index_of_next.map(|i| &mut self.dl_stack[i])
-    }
-
-    fn delete_stack_above(&mut self, node_index: usize) {
-        self.dl_stack[node_index].index_of_next = None;
-        self.final_index = Some(node_index);
-    }
-
-    fn delete_stack_until_node(&mut self, bottom_node_index: usize, top_node_index: usize) {
-        self.dl_stack[bottom_node_index].index_of_next = Some(top_node_index);
-        self.dl_stack[top_node_index].index_of_prev = Some(bottom_node_index);
-    }
+    // fn get_next_mut(&mut self, node: &DLLnode) -> Option<&mut DLLnode> {
+    //     node.index_of_next.map(|i| &mut self.dl_stack[i])
+    // }
+    //
+    // fn delete_stack_above(&mut self, node_index: usize) {
+    //     self.dl_stack[node_index].index_of_next = None;
+    //     self.final_index = Some(node_index);
+    // }
+    //
+    // fn delete_stack_until_node(&mut self, bottom_node_index: usize, top_node_index: usize) {
+    //     self.dl_stack[bottom_node_index].index_of_next = Some(top_node_index);
+    //     self.dl_stack[top_node_index].index_of_prev = Some(bottom_node_index);
+    // }
 
     fn replace_inside_stack_range(
         &mut self,
         bottom_node_index: usize,
         top_node_index: usize,
         begin_char_index: usize,
-        item: InlineTextComponent<'a>,
+        item: InlineTextComponent,
     ) {
         self.dl_stack.push(DLLnode {
             beginning_char_index: begin_char_index,
@@ -353,36 +452,36 @@ impl<'a> FakeDelimiterDLL<'a> {
     }
 
     // returns "pointer" to new node
-    fn replace_inside_stack_range_including(
-        &mut self,
-        bottom_node_index: usize,
-        top_node_index: usize,
-        begin_char_index: usize,
-        item: InlineTextComponent<'a>,
-    ) -> usize {
-        let new_prev = self.get_index_of_prev(bottom_node_index);
-        let new_next = self.get_index_of_next(top_node_index);
-        self.dl_stack.push(DLLnode {
-            beginning_char_index: begin_char_index,
-            inline_component: item,
-            index_of_prev: new_prev,
-            index_of_next: new_next,
-            index_of_this: self.dl_stack.len(),
-        });
-
-        if let Some(prev) = new_prev {
-            self.dl_stack[prev].index_of_next = Some(self.dl_stack.len() - 1);
-        } else {
-            self.initial_index = Some(self.dl_stack.len() - 1)
-        }
-
-        if let Some(next) = new_next {
-            self.dl_stack[next].index_of_prev = Some(self.dl_stack.len() - 1);
-        } else {
-            self.final_index = Some(self.dl_stack.len() - 1)
-        }
-        self.dl_stack.len() - 1
-    }
+    // fn replace_inside_stack_range_including(
+    //     &mut self,
+    //     bottom_node_index: usize,
+    //     top_node_index: usize,
+    //     begin_char_index: usize,
+    //     item: InlineTextComponent,
+    // ) -> usize {
+    //     let new_prev = self.get_index_of_prev(bottom_node_index);
+    //     let new_next = self.get_index_of_next(top_node_index);
+    //     self.dl_stack.push(DLLnode {
+    //         beginning_char_index: begin_char_index,
+    //         inline_component: item,
+    //         index_of_prev: new_prev,
+    //         index_of_next: new_next,
+    //         index_of_this: self.dl_stack.len(),
+    //     });
+    //
+    //     if let Some(prev) = new_prev {
+    //         self.dl_stack[prev].index_of_next = Some(self.dl_stack.len() - 1);
+    //     } else {
+    //         self.initial_index = Some(self.dl_stack.len() - 1)
+    //     }
+    //
+    //     if let Some(next) = new_next {
+    //         self.dl_stack[next].index_of_prev = Some(self.dl_stack.len() - 1);
+    //     } else {
+    //         self.final_index = Some(self.dl_stack.len() - 1)
+    //     }
+    //     self.dl_stack.len() - 1
+    // }
 
     fn delete_stack_above_including(&mut self, node_index: usize) {
         let prev_node_op = self.dl_stack[node_index]
@@ -397,54 +496,54 @@ impl<'a> FakeDelimiterDLL<'a> {
         }
     }
 
-    fn get_index_of_next(&self, index: usize) -> Option<usize> {
-        self.dl_stack[index].index_of_next
-    }
-
-    fn get_index_of_prev(&self, index: usize) -> Option<usize> {
-        self.dl_stack[index].index_of_prev
-    }
+    // fn get_index_of_next(&self, index: usize) -> Option<usize> {
+    //     self.dl_stack[index].index_of_next
+    // }
+    //
+    // fn get_index_of_prev(&self, index: usize) -> Option<usize> {
+    //     self.dl_stack[index].index_of_prev
+    // }
 
     fn remove_at_index(&mut self, index: usize) {
-        let next = self.dl_stack[index].index_of_next;
-        let prev = self.dl_stack[index].index_of_prev;
-        if prev.is_some() {
-            self.dl_stack[prev.unwrap()].index_of_next = next;
+        let next_op = self.dl_stack[index].index_of_next;
+        let prev_op = self.dl_stack[index].index_of_prev;
+        if let Some(prev_index) = prev_op {
+            self.dl_stack[prev_index].index_of_next = next_op;
         } else {
-            self.initial_index = next;
+            self.initial_index = next_op;
         }
-        if next.is_some() {
-            self.dl_stack[next.unwrap()].index_of_prev = prev;
+        if let Some(next_index) = next_op {
+            self.dl_stack[next_index].index_of_prev = prev_op;
         } else {
-            self.final_index = prev;
+            self.final_index = prev_op;
         }
     }
 
-    pub fn iter(&self) -> FakeDLLIter {
-        FakeDLLIter {
-            index: self.initial_index,
-            collection: self,
-        }
-    }
+    // pub fn iter(&self) -> FakeDLLIter {
+    //     FakeDLLIter {
+    //         index: self.initial_index,
+    //         collection: self,
+    //     }
+    // }
 }
 
-struct FakeDLLIter<'a> {
-    index: Option<usize>,
-    collection: &'a FakeDelimiterDLL<'a>,
-}
-
-impl<'a> Iterator for FakeDLLIter<'a> {
-    type Item = &'a DLLnode<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index.is_some() {
-            let out = self.collection.get(self.index.unwrap());
-            self.index = out.index_of_next;
-            return Some(out);
-        }
-        None
-    }
-}
+// struct FakeDLLIter<'a> {
+//     index: Option<usize>,
+//     collection: &'a FakeDelimiterDLL,
+// }
+//
+// impl<'a> Iterator for FakeDLLIter<'a> {
+//     type Item = &'a DLLnode;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         if self.index.is_some() {
+//             let out = self.collection.get(self.index.unwrap());
+//             self.index = out.index_of_next;
+//             return Some(out);
+//         }
+//         None
+//     }
+// }
 
 // think about what functionality we will need as we go along stack
 
@@ -530,10 +629,10 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
 
                 let mut matching_tick_count_search_iter = char_iter.clone();
                 let mut code_completed = false;
-                let starts_with_space = match matching_tick_count_search_iter.peek() {
-                    Some(' ') | Some('\n') => true,
-                    _ => false,
-                };
+                let starts_with_space = matches!(
+                    matching_tick_count_search_iter.peek(),
+                    Some(' ') | Some('\n')
+                );
                 let mut entirely_space = starts_with_space;
                 let mut last_is_space = starts_with_space;
                 'search_for_matching_tc: while let Some((start_pos, c)) =
@@ -652,7 +751,6 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                 }
 
                 let Some(matched_node) = matched_node_op else {
-                    add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                     delimit_stack.push_back(char_index, BrackClose);
                     text_begin = char_index + 1;
                     continue;
@@ -661,12 +759,13 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                 if matches!(matched_node_itc, LinkOpen(false, ..))
                     || matches!(matched_node_itc, ImgOpen(false, ..))
                 {
-                    matched_node.inline_component = matched_node_itc.to_text_comp();
+                    matched_node.inline_component.to_completed_content();
                     add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                     delimit_stack.push_back(char_index, BrackClose);
                     text_begin = char_index + 1;
                     continue;
                 }
+                let index_of_matched = matched_node.index_of_this;
                 let is_image = matches!(matched_node_itc, ImgOpen(..));
                 // we have found one and it is active
                 // let link_content_iter = match matched_node_itc {
@@ -690,10 +789,15 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                     char_iter = try_to_inline_link_iter;
                     text_begin = char_iter.offset();
                     link_made = true;
-                } else if let Some(rlt) = parse_reference_link(&mut try_to_reference_link_iter) {
+                } else if let Some(rlt) =
+                    dbg!(parse_reference_link(&mut try_to_reference_link_iter))
+                {
                     match rlt {
                         Full((start, end)) => {
+                            dbg!(&(start, end));
                             let norm_lab = normalize_label(&inline_str[start..end]);
+                            dbg!(lrd_table);
+                            dbg!(&norm_lab);
                             if lrd_table.contains_key(&norm_lab) {
                                 let bci = matched_node.beginning_char_index;
                                 let link_displayed = process_emphasis(
@@ -715,7 +819,9 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                         }
                         Collapsed => {
                             let norm_lab = normalize_label(
-                                &inline_str[matched_node.beginning_char_index..char_iter.offset()],
+                                &inline_str[matched_node.beginning_char_index
+                                    + if is_image { 1 } else { 0 }
+                                    ..char_iter.offset()],
                             );
                             if lrd_table.contains_key(&norm_lab) {
                                 let bci = matched_node.beginning_char_index;
@@ -740,7 +846,8 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                 } else {
                     // try for a shortcut link.
                     let norm_lab = normalize_label(
-                        &inline_str[matched_node.beginning_char_index..char_iter.offset()],
+                        &inline_str[matched_node.beginning_char_index + if is_image { 1 } else { 0 }
+                            ..char_iter.offset()],
                     );
                     if lrd_table.contains_key(&norm_lab) {
                         let bci = matched_node.beginning_char_index;
@@ -755,11 +862,29 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                     }
                 }
                 if !link_made {
+                    dbg!("=========");
+                    dbg!("failed to make link");
+                    dbg!("========");
+                    delimit_stack
+                        .get_mut(index_of_matched)
+                        .inline_component
+                        .to_completed_content();
                     delimit_stack.push_back(char_index, TextualContent(1));
+                    // matched_node.inline_component = matched_node.inline_component.to_text_comp();
                     text_begin = char_index + 1;
-                }
-                if is_image {
+                } else if !is_image {
                     //disable earlier link openers
+                    let mut before_opener_index_op =
+                        delimit_stack.get_mut(index_of_matched).index_of_prev;
+                    while let Some(before_opener_index) = before_opener_index_op {
+                        if let LinkOpen(ref mut b @ true) =
+                            delimit_stack.get_mut(before_opener_index).inline_component
+                        {
+                            *b = false;
+                        }
+                        before_opener_index_op =
+                            delimit_stack.get_mut(before_opener_index).index_of_prev;
+                    }
                 }
                 // if !link_made {
                 // }
@@ -803,12 +928,6 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
     process_emphasis(None, &mut delimit_stack)
 }
 
-// This can come next (since links have lower priority than code spans, autolinks, and raw html tags)
-fn process_links(stack: &mut FakeDelimiterDLL) -> Vec<InlineContent> {
-    process_emphasis(None, stack)
-}
-// fsub: forward search upper bound
-// boolean tells caller if it contains a link, deepest nested link has priority
 fn process_emphasis(
     stack_bottom: Option<usize>,
     stack: &mut FakeDelimiterDLL,
@@ -822,10 +941,10 @@ fn process_emphasis(
         stack_bottom.map(|dll_pointer| stack.get(dll_pointer).beginning_char_index);
     // only set op_bot when we find a non_matched closer_delimiter
     // set it as the *CHARACTER_OFFSET* in the corresponding vec of chars.
-    let mut openers_bottom_asts_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let mut openers_bottom_asts_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let mut openers_bottom_unds_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let mut openers_bottom_unds_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
+    let openers_bottom_asts_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
+    let openers_bottom_asts_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
+    let openers_bottom_unds_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
+    let openers_bottom_unds_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
     // index_in_fakedldll, char_offset it points to
     let mut unds_op_stack: Vec<(usize, usize)> = vec![];
     let mut asts_op_stack: Vec<(usize, usize)> = vec![];
@@ -844,13 +963,10 @@ fn process_emphasis(
                         openers_bottom_asts_not_opening[total_count % 3]
                     };
                     let mut matching_dl_index_op = None;
-                    while asts_op_stack_offset >= 0
-                        && this_op_bottom
-                            .map_or(true, |x| asts_op_stack[asts_op_stack_offset].1 > x)
-                    {
-                        if let Asts(op_tc, op_used, true, op_pc) = (stack
+                    while this_op_bottom.is_none_or(|x| asts_op_stack[asts_op_stack_offset].1 > x) {
+                        if let Asts(op_tc, _, true, op_pc) = stack
                             .get(asts_op_stack[asts_op_stack_offset].0)
-                            .inline_component)
+                            .inline_component
                         {
                             if (op_pc || pot_op)
                                 && (total_count + op_tc) % 3 == 0
@@ -880,7 +996,7 @@ fn process_emphasis(
                         // turn stack items inside the stack delimiters into actual inline content.
                         let mut emph_children: Vec<InlineContent> = vec![];
                         let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
-                        while node_to_eat_index_op.map_or(false, |ntei| {
+                        while node_to_eat_index_op.is_some_and(|ntei| {
                             stack.get(ntei).beginning_char_index < current_beginning_char_index
                         }) {
                             let nte = stack.get_mut(node_to_eat_index_op.unwrap());
@@ -891,15 +1007,17 @@ fn process_emphasis(
                             node_to_eat_index_op = nte.index_of_next;
                         }
                         // also clear out any delimiters on the stacks weve made in this function
-                        while let Some((dll_index, opener_char_index)) =
-                            unds_op_stack.pop_if(|(_, opener_char)| {
+                        while unds_op_stack
+                            .pop_if(|(_, opener_char)| {
                                 *opener_char > stack.get(matching_dl_index).beginning_char_index
                             })
+                            .is_some()
                         {}
-                        while let Some((dll_index, opener_char_index)) =
-                            asts_op_stack.pop_if(|(_, opener_char)| {
+                        while asts_op_stack
+                            .pop_if(|(_, opener_char)| {
                                 *opener_char > stack.get(matching_dl_index).beginning_char_index
                             })
+                            .is_some()
                         {}
                         stack.replace_inside_stack_range(
                             matching_dl_index,
@@ -926,7 +1044,8 @@ fn process_emphasis(
                                 .map(|s| s.index_of_this);
                             stack.remove_at_index(current_index);
                         }
-                        let mut opener_used_is_total = false;
+                        let opener_used_is_total;
+                        //TODO use panicking let statements, no if needed
                         if let Asts(total, used, ..) =
                             &mut stack.get_mut(matching_dl_index).inline_component
                         {
@@ -970,11 +1089,8 @@ fn process_emphasis(
                         openers_bottom_unds_not_opening[total_count % 3]
                     };
                     let mut matching_dl_index_op = None;
-                    while unds_op_stack_offset >= 0
-                        && this_op_bottom
-                            .map_or(true, |x| unds_op_stack[unds_op_stack_offset].1 > x)
-                    {
-                        if let Unds(op_tc, op_used, true, op_pc) = stack
+                    while this_op_bottom.is_none_or(|x| unds_op_stack[unds_op_stack_offset].1 > x) {
+                        if let Unds(op_tc, _, true, op_pc) = stack
                             .get(unds_op_stack[unds_op_stack_offset].0)
                             .inline_component
                         {
@@ -1006,7 +1122,7 @@ fn process_emphasis(
                         // turn stack items inside the stack delimiters into actual inline content.
                         let mut emph_children: Vec<InlineContent> = vec![];
                         let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
-                        while node_to_eat_index_op.map_or(false, |ntei| {
+                        while node_to_eat_index_op.is_some_and(|ntei| {
                             stack.get(ntei).beginning_char_index < current_beginning_char_index
                         }) {
                             let nte = stack.get_mut(node_to_eat_index_op.unwrap());
@@ -1017,15 +1133,17 @@ fn process_emphasis(
                             node_to_eat_index_op = nte.index_of_next;
                         }
                         // also clear out any delimiters on the stacks weve made in this function
-                        while let Some((dll_index, opener_char_index)) =
-                            unds_op_stack.pop_if(|(_, opener_char)| {
+                        while unds_op_stack
+                            .pop_if(|(_, opener_char)| {
                                 *opener_char > stack.get(matching_dl_index).beginning_char_index
                             })
+                            .is_some()
                         {}
-                        while let Some((dll_index, opener_char_index)) =
-                            asts_op_stack.pop_if(|(_, opener_char)| {
+                        while asts_op_stack
+                            .pop_if(|(_, opener_char)| {
                                 *opener_char > stack.get(matching_dl_index).beginning_char_index
                             })
+                            .is_some()
                         {}
                         stack.replace_inside_stack_range(
                             matching_dl_index,
@@ -1052,7 +1170,8 @@ fn process_emphasis(
                                 .map(|s| s.index_of_this);
                             stack.remove_at_index(current_index);
                         }
-                        let mut opener_used_is_total = false;
+                        let opener_used_is_total;
+                        //TODO: make this not use if let, just let and panic.
                         if let Unds(total, used, ..) =
                             &mut stack.get_mut(matching_dl_index).inline_component
                         {

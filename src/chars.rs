@@ -1,7 +1,11 @@
 use phf::phf_map;
 
-use crate::peekable_char_indices::{self, PeekableCharIndices};
+use crate::peekable_char_indices::PeekableCharIndices;
 
+pub trait UnicodeCategory {
+    fn is_unicode_punctuation(&self) -> bool;
+    fn is_unicode_symbol(&self) -> bool;
+}
 include!(concat!(env!("OUT_DIR"), "/html_entities.rs"));
 
 // the way we construct this, all tries end in ';'
@@ -161,7 +165,7 @@ pub fn push_chars_with_entities_and_bs(str_in: &str, string_builder: &mut String
             '\\' => {
                 if peekable_char_indices
                     .peek()
-                    .map_or(true, |c| !c.is_ascii_punctuation())
+                    .is_none_or(|c| !c.is_ascii_punctuation())
                 {
                     char_push_fn('\\', string_builder);
                 }
@@ -243,20 +247,16 @@ pub fn push_chars_with_entities_and_bs(str_in: &str, string_builder: &mut String
                             && let Some(c_nxt) = peekable_char_indices.next()
                         {
                             if c_nxt == ';' {
-                                match current_trie.get_child(c_nxt) {
-                                    Some(trie) => {
-                                        if let Some(chars) = trie.get_value() {
-                                            char_result = ResultChar::Array(chars);
-                                        }
-                                    }
-                                    _ => (),
+                                if let Some(final_trie) = current_trie.get_child(c_nxt)
+                                    && let Some(chars) = final_trie.get_value()
+                                {
+                                    char_result = ResultChar::Array(chars);
                                 }
                                 break 'trie_crawl;
                             }
                             current_trie_op = current_trie.get_child(c_nxt);
                         }
                     }
-                    //char index is already at next char
                 }
                 match char_result {
                     ResultChar::Array(chars_out) => {

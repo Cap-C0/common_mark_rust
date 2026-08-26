@@ -3,18 +3,13 @@ use crate::{
     peekable_char_indices::*,
 };
 
-// pub enum LinkType {
-//     /// optional link destination, optional link title.
-//     /// the char offsets are given relative to the start of text,
-//     /// the caller needs to adjust these to the actual char_ptr in
-//     /// the full chars vector.
-//     InlineLink(Option<(usize, usize)>, Option<(usize, usize)>),
-//     ReferenceLink,
-//     CollapsedReferenceLink,
-//     ShortcutReferenceLink,
-// }
-
-// pub fn parse_link(char_iter: &mut PeekableCharIndices) -> Option<LinkType> {}
+/**
+ *   The contract for calling parsers is generally like so:
+ *   - the callee can modify the incoming iterator whether it succeeds or fails. This means that it is
+ *     the callers responsibility to clone the iterater and "backtrack" in the case of failure.
+ *   - Parsers generally return the char_index *after* the last relevant character, along with
+ *     in some cases extra information for callee (ie, is the info wrapped in delimiters.)
+ */
 
 pub fn parse_inline_suffix(
     char_iter: &mut PeekableCharIndices,
@@ -57,18 +52,19 @@ pub fn parse_inline_suffix(
     Some((dest_chars, tit_chars))
 }
 
+#[derive(Debug)]
 pub enum ReferenceLinkType {
     Full((usize, usize)),
     Collapsed,
 }
 
 pub fn parse_reference_link(char_iter: &mut PeekableCharIndices) -> Option<ReferenceLinkType> {
+    let start_index = char_iter.offset();
     char_iter.next_if_char_eq('[')?;
     if char_iter.next_if_char_eq(']').is_some() {
         return Some(Collapsed);
     }
-    let start_index = char_iter.offset();
-    let end_index = parse_link_label(char_iter)? - 1;
+    let end_index = parse_link_label(char_iter)?;
     Some(Full((start_index, end_index)))
 }
 
@@ -81,9 +77,8 @@ pub fn parse_link_label(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     let mut non_space_encountered = false;
     let mut char_count = 0;
     while char_count <= 1000
-        && let Some((ci, c)) = char_iter.next_and_index()
+        && let Some(c) = char_iter.next()
     {
-        non_space_encountered |= !c.is_whitespace();
         match c {
             '\\' => {
                 char_count += 2;
@@ -92,13 +87,14 @@ pub fn parse_link_label(char_iter: &mut PeekableCharIndices) -> Option<usize> {
             '[' => return None,
             ']' => {
                 if non_space_encountered {
-                    return Some(ci);
+                    return Some(char_iter.offset());
                 } else {
                     return None;
                 }
             }
             _ => char_count += 1,
         }
+        non_space_encountered |= !c.is_whitespace();
     }
     None
 }
@@ -107,27 +103,36 @@ pub fn parse_link_label(char_iter: &mut PeekableCharIndices) -> Option<usize> {
  * returns Some(k) if text matches [.*(c| c != " \t\n")*.*]
  * to get the link label, from the return value, get text[1..k-1]*/
 //TODO
-pub fn normalize_label(label: &str) -> String {
-    let mut lab_out = String::new();
-    let mut char_iter = label[1..label.len() - 1].chars().peekable();
-    //strip leading whitespace
-    while char_iter.peek().unwrap().is_whitespace() {
-        char_iter.next();
-    }
-    let mut seen_space = false;
-    while let Some(c) = char_iter.next() {
-        if " \n\t".contains(c) {
-            seen_space = true
-        } else {
-            if seen_space {
-                seen_space = false;
-                lab_out.push(' ');
-            }
-            c.to_lowercase().for_each(|cl| lab_out.push(cl));
-        }
-    }
-    lab_out
-}
+// pub fn normalize_label(label: &str) -> String {
+//     let mut lab_out = String::new();
+//     dbg!(label);
+//     let mut char_iter = label[1..label.len() - 1].chars().peekable();
+//     //strip leading whitespace
+//     if char_iter.peek().is_none() {
+//         return String::new();
+//     }
+//     while let Some(c) = char_iter.peek()
+//         && c.is_whitespace()
+//     {
+//         char_iter.next();
+//     }
+//     if char_iter.peek().is_none() {
+//         return String::new();
+//     }
+//     let mut seen_space = false;
+//     while let Some(c) = char_iter.next() {
+//         if " \n\t".contains(c) {
+//             seen_space = true
+//         } else {
+//             if seen_space {
+//                 seen_space = false;
+//                 lab_out.push(' ');
+//             }
+//             c.unicode_case_fold().for_each(|cl| lab_out.push(cl));
+//         }
+//     }
+//     lab_out
+// }
 
 pub fn parse_link_destination(char_iter: &mut PeekableCharIndices) -> Option<(usize, bool)> {
     let c_0 = char_iter.peek()?;
@@ -218,7 +223,7 @@ pub fn parse_scheme(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     {
         char_count += 1;
     }
-    if 2 <= char_count && char_count <= 32 {
+    if (2..=32).contains(&char_count) {
         return Some(char_iter.offset());
     }
     None
@@ -286,12 +291,11 @@ pub fn parse_autolink(char_iter: &mut PeekableCharIndices) -> Option<(usize, boo
     let mut em_iter = char_iter.clone();
     if let Some(index_of_last_char) = parse_uri_autolink(&mut al_iter) {
         *char_iter = al_iter;
-        return Some((index_of_last_char, false));
-    } else if let Some(index_of_last_char) = parse_email(&mut em_iter) {
-        *char_iter = em_iter;
-        return Some((index_of_last_char, true));
+        Some((index_of_last_char, false))
     } else {
-        return None;
+        let index_of_last_char = parse_email(&mut em_iter)?;
+        *char_iter = em_iter;
+        Some((index_of_last_char, true))
     }
 }
 
@@ -301,7 +305,7 @@ pub fn parse_html_tag(char_iter: &mut PeekableCharIndices) -> Option<usize> {
     //     return None;
     // }
 
-    return match char_iter.next()? {
+    match char_iter.next()? {
         '/' => parse_closing_tag(char_iter),
         '?' => parse_processing_instruction(char_iter),
         '!' => match char_iter.peek()? {
@@ -316,7 +320,7 @@ pub fn parse_html_tag(char_iter: &mut PeekableCharIndices) -> Option<usize> {
                 None
             }
         }
-    };
+    }
 }
 
 // These functions are called based on lookahead by callers, so opening brackets are consumed
@@ -469,9 +473,9 @@ pub fn parse_cdata_section(char_iter: &mut PeekableCharIndices) -> Option<usize>
     // if current_iteration_iter.next_if_char_eq('[').is_none() {
     //     break 'collect_lrds;
     // }
-    let mut zip_iter = char_iter.take(to_match.len()).zip(to_match.chars());
+    let zip_iter = char_iter.take(to_match.len()).zip(to_match.chars());
 
-    while let Some((c_in, c_to_match)) = zip_iter.next() {
+    for (c_in, c_to_match) in zip_iter {
         if dbg!(c_in) != dbg!(c_to_match) {
             return None;
         }

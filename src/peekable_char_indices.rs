@@ -83,7 +83,7 @@ impl<'a> PeekableCharIndices<'a> {
         match self.peek() {
             Some(tup) => {
                 if func(tup) {
-                    return self.next();
+                    self.next()
                 } else {
                     None
                 }
