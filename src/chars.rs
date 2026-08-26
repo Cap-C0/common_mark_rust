@@ -25,6 +25,7 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
         push_html_reserved_char(c, string_builder);
     } else {
         // it needs to be utf 8 encoded.
+        // TODO: fix this (not doing omlats right?)
         let as_u32 = c as u32;
         if as_u32 <= 0x007F {
             let ys = as_u32 >> 4;
@@ -38,7 +39,7 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
             let zs = as_u32 & 0xF;
             string_builder.push('%');
             string_builder.push(
-                std::char::from_digit(0xb | (xs >> 2), 16)
+                std::char::from_digit(0xc | (xs >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
             );
@@ -64,7 +65,7 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
             string_builder.push(std::char::from_digit(ws, 16).unwrap().to_ascii_uppercase());
             string_builder.push('%');
             string_builder.push(
-                std::char::from_digit(0xb | (xs >> 2), 16)
+                std::char::from_digit(0xc | (xs >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
             );
@@ -103,7 +104,7 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
             string_builder.push(std::char::from_digit(ws, 16).unwrap().to_ascii_uppercase());
             string_builder.push('%');
             string_builder.push(
-                std::char::from_digit(0xb | (xs >> 2), 16)
+                std::char::from_digit(0xc | (xs >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
             );
@@ -134,121 +135,145 @@ pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
     string_builder.push_str(x);
 }
 
-pub fn push_chars_with_entities_and_bs(str_in: &str, string_builder: &mut String) {
+pub fn push_chars_with_entities_and_bs(str_in: &str, string_builder: &mut String, in_url: bool) {
+    let mut char_push_fn: Box<dyn FnMut(char, &mut String)> = if in_url {
+        Box::new(|c, string_builder| push_character_in_uri(c, string_builder))
+    } else {
+        Box::new(|c, string_builder| push_html_reserved_char(c, string_builder))
+    };
     let mut peekable_char_indices = PeekableCharIndices::new(str_in.char_indices());
     while let Some(c) = peekable_char_indices.next() {
-        if c == '\\' {
-            if let Some(punc) = peekable_char_indices.next_if(|c| c.is_ascii_punctuation()) {
-                push_html_reserved_char(punc, string_builder);
-            } else {
-                push_html_reserved_char('\\', string_builder);
-            }
-        } else if c == '&' {
-            enum ResultChar<'a> {
-                Single(char),
-                Array(&'a [char]),
-                Fail,
-            }
-            let amp_iter = peekable_char_indices.clone();
-            let mut char_result = ResultChar::Fail;
-            if peekable_char_indices.next_if_char_eq('#').is_some() {
-                if peekable_char_indices
-                    .next_if(|c_nxt| "Xx".contains(c_nxt))
-                    .is_some()
+        match c {
+            '%' => {
+                let mut percent_iter = peekable_char_indices.clone();
+                if in_url
+                    && let Some(hex_char_0) = percent_iter.next_if(|c| c.is_ascii_hexdigit())
+                    && let Some(hex_char_1) = percent_iter.next_if(|c| c.is_ascii_hexdigit())
                 {
-                    //hexadecimal
-                    let mut hex_char_count = 0;
-                    let mut hex_acc = 0;
-                    'hex_loop: while hex_char_count < 7
-                        && let Some(c_nxt) = peekable_char_indices.next()
-                    {
-                        if c_nxt == ';' {
-                            if hex_char_count == 0 {
-                                break;
-                            }
-                            if hex_acc != 0
-                                && let Some(char_out) = char::from_u32(hex_acc)
-                            {
-                                char_result = ResultChar::Single(char_out);
-                            } else {
-                                char_result = ResultChar::Single(REPLACEMENT_CHARACTER);
-                            }
-                            break 'hex_loop;
-                        } else if c_nxt.is_ascii_hexdigit() {
-                            hex_char_count += 1;
-                            hex_acc *= 16;
-                            hex_acc += c_nxt.to_digit(16).unwrap();
-                        } else {
-                            break 'hex_loop;
-                        }
-                    }
+                    string_builder.push('%');
+                    string_builder.push(hex_char_0);
+                    string_builder.push(hex_char_1);
+                    peekable_char_indices = percent_iter;
                 } else {
-                    //decimal
-                    let mut dec_char_count = 0;
-                    let mut dec_acc = 0;
-                    'dec_loop: while dec_char_count < 8
-                        && let Some(c_nxt) = peekable_char_indices.next()
+                    char_push_fn(c, string_builder);
+                }
+            }
+            '\\' => {
+                if peekable_char_indices
+                    .peek()
+                    .map_or(true, |c| !c.is_ascii_punctuation())
+                {
+                    char_push_fn('\\', string_builder);
+                }
+            }
+            '&' => {
+                enum ResultChar<'a> {
+                    Single(char),
+                    Array(&'a [char]),
+                    Fail,
+                }
+                let amp_iter = peekable_char_indices.clone();
+                let mut char_result = ResultChar::Fail;
+                if peekable_char_indices.next_if_char_eq('#').is_some() {
+                    if peekable_char_indices
+                        .next_if(|c_nxt| "Xx".contains(c_nxt))
+                        .is_some()
                     {
-                        // dbg!(&dec_char_count);
-                        if c_nxt == ';' {
-                            if dec_char_count == 0 {
+                        //hexadecimal
+                        let mut hex_char_count = 0;
+                        let mut hex_acc = 0;
+                        'hex_loop: while hex_char_count < 7
+                            && let Some(c_nxt) = peekable_char_indices.next()
+                        {
+                            if c_nxt == ';' {
+                                if hex_char_count == 0 {
+                                    break;
+                                }
+                                if hex_acc != 0
+                                    && let Some(char_out) = char::from_u32(hex_acc)
+                                {
+                                    char_result = ResultChar::Single(char_out);
+                                } else {
+                                    char_result = ResultChar::Single(REPLACEMENT_CHARACTER);
+                                }
+                                break 'hex_loop;
+                            } else if c_nxt.is_ascii_hexdigit() {
+                                hex_char_count += 1;
+                                hex_acc *= 16;
+                                hex_acc += c_nxt.to_digit(16).unwrap();
+                            } else {
+                                break 'hex_loop;
+                            }
+                        }
+                    } else {
+                        //decimal
+                        let mut dec_char_count = 0;
+                        let mut dec_acc = 0;
+                        'dec_loop: while dec_char_count < 8
+                            && let Some(c_nxt) = peekable_char_indices.next()
+                        {
+                            // dbg!(&dec_char_count);
+                            if c_nxt == ';' {
+                                if dec_char_count == 0 {
+                                    break 'dec_loop;
+                                }
+                                if dec_acc != 0
+                                    && let Some(char_out) = char::from_u32(dec_acc)
+                                {
+                                    char_result = ResultChar::Single(char_out);
+                                } else {
+                                    char_result = ResultChar::Single(REPLACEMENT_CHARACTER);
+                                }
+                                break 'dec_loop;
+                            } else if c_nxt.is_ascii_digit() {
+                                dec_char_count += 1;
+                                dec_acc *= 10;
+                                dec_acc += c_nxt.to_digit(10).unwrap();
+                            } else {
                                 break 'dec_loop;
                             }
-                            if dec_acc != 0
-                                && let Some(char_out) = char::from_u32(dec_acc)
-                            {
-                                char_result = ResultChar::Single(char_out);
-                            } else {
-                                char_result = ResultChar::Single(REPLACEMENT_CHARACTER);
-                            }
-                            break 'dec_loop;
-                        } else if c_nxt.is_ascii_digit() {
-                            dec_char_count += 1;
-                            dec_acc *= 10;
-                            dec_acc += c_nxt.to_digit(10).unwrap();
-                        } else {
-                            break 'dec_loop;
                         }
                     }
-                }
-                //do the decimal thing
-                // 1-7 digits or
-            } else {
-                let mut current_trie_op = HTML_ENTITIES.get_child('&');
-                'trie_crawl: {
-                    while let Some(current_trie) = current_trie_op
-                        && let Some(c_nxt) = peekable_char_indices.next()
-                    {
-                        if c_nxt == ';' {
-                            match current_trie.get_child(c_nxt) {
-                                Some(trie) => {
-                                    if let Some(chars) = trie.get_value() {
-                                        char_result = ResultChar::Array(chars);
+                    //do the decimal thing
+                    // 1-7 digits or
+                } else {
+                    let mut current_trie_op = HTML_ENTITIES.get_child('&');
+                    'trie_crawl: {
+                        while let Some(current_trie) = current_trie_op
+                            && let Some(c_nxt) = peekable_char_indices.next()
+                        {
+                            if c_nxt == ';' {
+                                match current_trie.get_child(c_nxt) {
+                                    Some(trie) => {
+                                        if let Some(chars) = trie.get_value() {
+                                            char_result = ResultChar::Array(chars);
+                                        }
                                     }
+                                    _ => (),
                                 }
-                                _ => (),
+                                break 'trie_crawl;
                             }
-                            break 'trie_crawl;
+                            current_trie_op = current_trie.get_child(c_nxt);
                         }
-                        current_trie_op = current_trie.get_child(c_nxt);
+                    }
+                    //char index is already at next char
+                }
+                match char_result {
+                    ResultChar::Array(chars_out) => {
+                        for c in chars_out {
+                            char_push_fn(*c, string_builder);
+                        }
+                    }
+                    ResultChar::Single(c) => char_push_fn(c, string_builder),
+                    ResultChar::Fail => {
+                        char_push_fn('&', string_builder);
+                        peekable_char_indices = amp_iter;
                     }
                 }
-                //char index is already at next char
             }
-            match char_result {
-                ResultChar::Array(chars_out) => {
-                    for c in chars_out {
-                        push_html_reserved_char(*c, string_builder);
-                    }
-                }
-                ResultChar::Single(c) => push_html_reserved_char(c, string_builder),
-                ResultChar::Fail => {
-                    push_html_reserved_char('&', string_builder);
-                    peekable_char_indices = amp_iter;
-                }
+            _ => {
+                char_push_fn(c, string_builder);
             }
-        } else {
-            push_html_reserved_char(c, string_builder);
         }
     }
 }

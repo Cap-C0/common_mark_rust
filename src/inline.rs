@@ -91,7 +91,7 @@ impl InlineContent {
             Softbreak => string_builder.push_str("\n"),
             Hardbreak => string_builder.push_str("<br />\n"),
             Text(start, end) => {
-                push_chars_with_entities_and_bs(&string_array[*start..*end], string_builder);
+                push_chars_with_entities_and_bs(&string_array[*start..*end], string_builder, false);
             }
             Emph(inline_contents) => {
                 string_builder.push_str("<em>");
@@ -112,9 +112,11 @@ impl InlineContent {
                 } else {
                     string_builder.push_str("<a href=\"");
                     if let Some((start, end)) = dest_op {
-                        for c in string_array[*start..*end].chars() {
-                            push_character_in_uri(c, string_builder);
-                        }
+                        push_chars_with_entities_and_bs(
+                            &string_array[*start..*end],
+                            string_builder,
+                            true,
+                        );
                     }
                     string_builder.push('\"');
                     if let Some((start, end)) = tit_op {
@@ -122,6 +124,7 @@ impl InlineContent {
                         push_chars_with_entities_and_bs(
                             &string_array[*start..*end],
                             string_builder,
+                            false,
                         );
                         string_builder.push('\"');
                     }
@@ -671,7 +674,7 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                 //     _ => unreachable!(),
                 // };
 
-                let mut _link_made = false;
+                let mut link_made = false;
                 let mut try_to_inline_link_iter = char_iter.clone();
                 let mut try_to_reference_link_iter = char_iter.clone();
                 if let Some((dest_op, tit_op)) =
@@ -686,7 +689,7 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                     );
                     char_iter = try_to_inline_link_iter;
                     text_begin = char_iter.offset();
-                    _link_made = true;
+                    link_made = true;
                 } else if let Some(rlt) = parse_reference_link(&mut try_to_reference_link_iter) {
                     match rlt {
                         Full((start, end)) => {
@@ -707,7 +710,7 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                                 );
                                 char_iter = try_to_reference_link_iter;
                                 text_begin = char_iter.offset();
-                                _link_made = true;
+                                link_made = true;
                             }
                         }
                         Collapsed => {
@@ -730,7 +733,7 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                                 );
                                 char_iter = try_to_reference_link_iter;
                                 text_begin = char_iter.offset();
-                                _link_made = true;
+                                link_made = true;
                             }
                         }
                     }
@@ -748,8 +751,12 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                             CompletedContent(ReferenceLink(is_image, norm_lab, link_displayed)),
                         );
                         text_begin = char_iter.offset();
-                        _link_made = true;
+                        link_made = true;
                     }
+                }
+                if !link_made {
+                    delimit_stack.push_back(char_index, TextualContent(1));
+                    text_begin = char_index + 1;
                 }
                 if is_image {
                     //disable earlier link openers

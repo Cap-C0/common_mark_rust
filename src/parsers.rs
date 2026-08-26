@@ -29,8 +29,8 @@ pub fn parse_inline_suffix(
     let dest_start = char_iter.offset();
     let (dest_end, is_bracketed) = parse_link_destination(char_iter)?;
     let dest_adjust = if is_bracketed { 1 } else { 0 };
-    let dest_chars = if dest_start + (2 * dest_adjust) < dest_end {
-        Some((dest_start + dest_adjust, dest_end - dest_adjust))
+    let dest_chars = if dest_start + dest_adjust < dest_end {
+        Some((dest_start + dest_adjust, dest_end))
     } else {
         None
     };
@@ -139,8 +139,11 @@ pub fn parse_link_destination(char_iter: &mut PeekableCharIndices) -> Option<(us
         char_iter.next();
         while let Some((ci, c)) = char_iter.next_and_index() {
             if c == '\\' {
+                if matches!(char_iter.peek(), Some('\n')) {
+                    return None;
+                }
                 char_iter.next();
-            } else if c == '<' {
+            } else if "<\n".contains(c) {
                 return None;
             } else if c == '>' {
                 return Some((ci, true));

@@ -329,7 +329,7 @@ impl Block {
                 string_builder.push_str("<pre><code");
                 if lang_hint.len() > 0 {
                     string_builder.push_str(" class=\"language-");
-                    push_chars_with_entities_and_bs(lang_hint, string_builder);
+                    push_chars_with_entities_and_bs(lang_hint, string_builder, false);
                     string_builder.push('\"');
                 }
                 string_builder.push('>');

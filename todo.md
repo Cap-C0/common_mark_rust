@@ -34,6 +34,10 @@
   - [x] insecure characters
 
 - [x] refactor char index iterators to only return char (no index)
-- [ ] refactor close_paragraph
-- [ ] refactor html block things
-- [ ] refactor create new blocks
+- [x] refactor close_paragraph
+- [x] refactor html block things
+- [x] refactor create new blocks
+- [ ] bs escaping in link dests.
+- [ ] disable prev brackets from links.
+- [ ] images
+- [ ] better char writing ergonomics.
