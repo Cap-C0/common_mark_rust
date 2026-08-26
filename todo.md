@@ -37,7 +37,7 @@
 - [x] refactor close_paragraph
 - [x] refactor html block things
 - [x] refactor create new blocks
-- [ ] bs escaping in link dests.
+- [x] bs escaping in link dests.
 - [ ] disable prev brackets from links.
 - [ ] images
 - [ ] better char writing ergonomics.

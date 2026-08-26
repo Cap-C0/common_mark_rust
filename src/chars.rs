@@ -50,7 +50,7 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
             );
             string_builder.push('%');
             string_builder.push(
-                std::char::from_digit(0x8 | (ys >> 2), 16)
+                std::char::from_digit(0x8 | (ys & 0x3), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
             );
@@ -76,7 +76,7 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
             );
             string_builder.push('%');
             string_builder.push(
-                std::char::from_digit(0x8 | (ys >> 2), 16)
+                std::char::from_digit(0x8 | (ys & 0x3), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
             );
@@ -115,7 +115,7 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
             );
             string_builder.push('%');
             string_builder.push(
-                std::char::from_digit(0x8 | (ys >> 2), 16)
+                std::char::from_digit(0x8 | (ys & 0x3), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
             );
