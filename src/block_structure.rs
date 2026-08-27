@@ -27,8 +27,8 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     };
     // dbg!(line_0);
     let mut parsing_state = ParsingState {
-        document: document,
-        lrd_table: lrd_table,
+        document,
+        lrd_table,
         line_state: LineState::new(line_0),
         open_block_depth: 0,
         open_par_above: false,
@@ -171,7 +171,7 @@ impl<'a> LineState<'a> {
         match self.peek() {
             Some(tup) => {
                 if func(tup) {
-                    return self.next();
+                    self.next()
                 } else {
                     None
                 }
@@ -416,7 +416,7 @@ fn block_quote_encountered(line_state: &mut LineState) -> bool {
     if line_state.consume_one_space() {
         line_state.space_from_last_structure -= 1;
     }
-    return true;
+    true
 }
 
 fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block> {
@@ -438,27 +438,27 @@ fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block> {
         }
     }
     if t == '`' {
-        while let Some(c) = line_state.next() {
+        for c in line_state {
             if c == '`' {
                 return None;
             }
         }
     }
-    return Some(FencedCodeBlock(
+    Some(FencedCodeBlock(
         String::new(),
         true,
         t,
         info_str,
         pre_space_count,
         tick_count,
-    ));
+    ))
 }
 
 fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block> {
     let start_offset = line_state.offset();
     line_state.consume_while_char_eq('#');
     let pound_count = line_state.offset() - start_offset;
-    if 0 >= pound_count || pound_count > 6 {
+    if !(1..=6).contains(&pound_count) {
         return None;
     }
 
@@ -506,7 +506,7 @@ fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block> {
         }
     }
 
-    return Some(Heading(Inline::new(str_out), pound_count));
+    Some(Heading(Inline::new(str_out), pound_count))
 }
 
 fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
@@ -672,9 +672,7 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
         let mut line_state_clone = eat_lt_iter.clone();
         if simple_starts_with(rt)(&mut line_state_clone)
             && (line_state_clone.is_empty()
-                || (&mut line_state_clone)
-                    .next_if(|c| " \t>".contains(c))
-                    .is_some()
+                || line_state_clone.next_if(|c| " \t>".contains(c)).is_some()
                 || (line_state_clone.next_if_char_eq('/').is_some()
                     && line_state_clone.next_if_char_eq('>').is_some()))
         {
@@ -712,9 +710,9 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
         for c in &mut *line_state {
             string_out.push(c);
         }
-        return Some(HTMLBlock(string_out, true, BlankLine));
+        Some(HTMLBlock(string_out, true, BlankLine))
     } else {
-        return None;
+        None
     }
 }
 
@@ -1109,11 +1107,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
                 FencedCodeBlock(..) => break 'blank_line,
                 HTMLBlock(_, true, ContainsStrings(_)) => break 'blank_line,
                 HTMLBlock(_, is_open @ true, BlankLine) => *is_open = false,
-                ListItem(blocks, continuable, _) => {
-                    if blocks.is_empty() {
-                        *continuable = false;
-                    }
-                }
+                ListItem(blocks, continuable, _) if blocks.is_empty() => *continuable = false,
                 _ => (),
             }
             close_paragraph(parsing_state);
@@ -1136,7 +1130,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
     {
         IndentedCodeBlock(chars, spaces) => {
             // None Blank Line!
-            chars.push_str(&spaces);
+            chars.push_str(spaces);
             *spaces = String::new();
             chars.push('\n');
             // dbg!(&char_offset);
@@ -1156,16 +1150,15 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
         FencedCodeBlock(chars, is_open @ true, marker, _, indent_count, marker_count) => {
             let mut try_to_close_chars = parsing_state.line_state.clone();
             try_to_close_chars.consume_indent_until_sfls_ge(4);
-            if try_to_close_chars.space_from_last_structure <= 3 {
-                match fenced_code_block_encountered(&mut try_to_close_chars) {
-                    Some(FencedCodeBlock(_, _, t, infstr, _, tc)) => {
-                        if t == *marker && infstr.len() == 0 && tc >= *marker_count {
-                            *is_open = false;
-                            return;
-                        }
-                    }
-                    _ => (),
-                }
+            if try_to_close_chars.space_from_last_structure <= 3
+                && let Some(FencedCodeBlock(_, _, t, infstr, _, tc)) =
+                    fenced_code_block_encountered(&mut try_to_close_chars)
+                && t == *marker
+                && infstr.is_empty()
+                && tc >= *marker_count
+            {
+                *is_open = false;
+                return;
             }
             // println!("line: {:?} can be added!", &line[*char_offset..]);
             let line_state = &mut parsing_state.line_state;
@@ -1276,7 +1269,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
                     List(_, is_tight, _, _blank_line_encountered) => {
                         *is_tight = parsing_state
                             .blank_line_depth
-                            .map_or(true, |d| d > list_depth)
+                            .is_none_or(|d| d > list_depth)
                             && *is_tight
                     }
                     _ => unreachable!(),
@@ -1296,35 +1289,22 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
         }
 
         //now check if we can add a new list item to an existing list
-        let last_block_list: Option<ListType> = match parsing_state
+        let mut list_item_iter = parsing_state.line_state.clone();
+        if let List(_, _, existing_lt, _) = parsing_state
             .document
             .get_block(parsing_state.open_block_depth)
+            && let Some((new_lt, li)) = list_item_encountered(&mut list_item_iter)
+            && existing_lt.same_list_eq(&new_lt)
         {
-            List(_, _, lt, _) => Some(lt.clone()),
-            _ => None,
-        };
-
-        if let Some(list_type) = last_block_list {
-            // dbg!(last_block_list);
-            // dbg!(pre_space_count);
-            //now check if we can add a new list item to an existing list
-            let mut list_item_iter = parsing_state.line_state.clone();
-            match list_item_encountered(&mut list_item_iter) {
-                Some((lt, li)) => {
-                    if list_type.same_list_eq(&lt) {
-                        close_paragraph(parsing_state);
-                        depth_of_list_being_added_to = Some(parsing_state.open_block_depth);
-                        match parsing_state.get_open_block() {
-                            List(blocks, _, _, _) => blocks.push(li),
-                            _ => unreachable!(),
-                        }
-                        parsing_state.open_block_depth += 1;
-                        parsing_state.line_state = list_item_iter;
-                        parsing_state.line_state.consume_indent_until_sfls_ge(4);
-                    }
-                }
-                None => (),
-            }
+            close_paragraph(parsing_state);
+            depth_of_list_being_added_to = Some(parsing_state.open_block_depth);
+            let List(blocks, ..) = parsing_state.get_open_block() else {
+                unreachable!();
+            };
+            blocks.push(li);
+            parsing_state.open_block_depth += 1;
+            parsing_state.line_state = list_item_iter;
+            parsing_state.line_state.consume_indent_until_sfls_ge(4);
         }
 
         // keep looking for new block starts
@@ -1446,7 +1426,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             List(_, is_tight, _, _blank_line_encountered) => {
                 *is_tight = parsing_state
                     .blank_line_depth
-                    .map_or(true, |d| dbg!(d > depth_of_list_block))
+                    .is_none_or(|d| dbg!(d > depth_of_list_block))
                     && *is_tight
             }
             _ => unreachable!(),
@@ -1460,18 +1440,15 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
     }
 
     //now check if theres a paragraph we can continue lazily
-    match parsing_state.document.get_last_block() {
-        Paragraph(inline, true) => {
-            inline.string.push('\n');
-            parsing_state.line_state.consume_indent();
-            for c in parsing_state.line_state.clone() {
-                inline.string.push(c);
-            }
-            parsing_state.open_par_exists = true;
-            parsing_state.open_par_above = true;
-            return;
+    if let Paragraph(inline, true) = parsing_state.document.get_last_block() {
+        inline.string.push('\n');
+        parsing_state.line_state.consume_indent();
+        for c in parsing_state.line_state.clone() {
+            inline.string.push(c);
         }
-        _ => (),
+        parsing_state.open_par_exists = true;
+        parsing_state.open_par_above = true;
+        return;
     }
 
     // if theres no paragraph to continue, check to create an indented code block
@@ -1516,7 +1493,6 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             ));
             parsing_state.open_par_exists = true;
             parsing_state.open_par_above = true;
-            return;
         }
         _ => unreachable!(),
     }

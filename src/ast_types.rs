@@ -210,17 +210,15 @@ impl Block {
         };
 
         if !descend {
-            return self;
+            self
         } else {
             match self {
                 Document(blocks)
                 | BlockQuote(blocks, _)
                 | List(blocks, _, _, _)
-                | ListItem(blocks, _, _) => {
-                    return blocks.last_mut().unwrap().get_last_block();
-                }
+                | ListItem(blocks, _, _) => blocks.last_mut().unwrap().get_last_block(),
                 _ => unreachable!("already bool checked earlier"),
-            };
+            }
         }
     }
 
@@ -230,6 +228,7 @@ impl Block {
         str_out
     }
 
+    //TODO: find a more elegant way of doing this \n business
     fn to_html_helper(
         &self,
         in_tight_list: bool,
@@ -243,7 +242,7 @@ impl Block {
                 }
             }
             BlockQuote(blocks, _) => {
-                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 string_builder.push_str("<blockquote>\n");
@@ -253,7 +252,7 @@ impl Block {
                 string_builder.push_str("</blockquote>\n");
             }
             List(blocks, is_tight, list_type, _) => {
-                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 match list_type {
@@ -285,7 +284,7 @@ impl Block {
                 string_builder.push_str("</li>\n");
             }
             Heading(il, h) => {
-                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 string_builder.push_str(&format!("<h{}>", h));
@@ -293,25 +292,25 @@ impl Block {
                 string_builder.push_str(&format!("</h{}>\n", h));
             }
             Paragraph(il, _) => {
-                if !in_tight_list && il.string.len() > 0 {
-                    if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                if !in_tight_list && !il.string.is_empty() {
+                    if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                         string_builder.push('\n');
                     }
                     string_builder.push_str("<p>");
                 }
                 il.to_html(string_builder, lrd_table);
-                if !in_tight_list && il.string.len() > 0 {
+                if !in_tight_list && !il.string.is_empty() {
                     string_builder.push_str("</p>\n");
                 }
             }
             ThematicBreak => {
-                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 string_builder.push_str("<hr />\n")
             }
             IndentedCodeBlock(string, _items1) => {
-                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 string_builder.push_str("<pre><code>");
@@ -321,11 +320,11 @@ impl Block {
                 string_builder.push_str("\n</code></pre>\n");
             }
             FencedCodeBlock(string, _, _, lang_hint, _, _) => {
-                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 string_builder.push_str("<pre><code");
-                if lang_hint.len() > 0 {
+                if !lang_hint.is_empty() {
                     string_builder.push_str(" class=\"language-");
                     push_chars_with_entities_and_bs(lang_hint, string_builder, false);
                     string_builder.push('\"');
@@ -337,7 +336,7 @@ impl Block {
                 string_builder.push_str("</code></pre>\n");
             }
             HTMLBlock(string, ..) => {
-                if string_builder.len() > 0 && !string_builder.ends_with('\n') {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
                 for c in string.chars() {

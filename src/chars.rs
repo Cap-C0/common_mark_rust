@@ -139,11 +139,12 @@ pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
     string_builder.push_str(x);
 }
 
+type CharPusher = dyn FnMut(char, &mut String);
 pub fn push_chars_with_entities_and_bs(str_in: &str, string_builder: &mut String, in_url: bool) {
-    let mut char_push_fn: Box<dyn FnMut(char, &mut String)> = if in_url {
-        Box::new(|c, string_builder| push_character_in_uri(c, string_builder))
+    let mut char_push_fn: Box<CharPusher> = if in_url {
+        Box::new(push_character_in_uri)
     } else {
-        Box::new(|c, string_builder| push_html_reserved_char(c, string_builder))
+        Box::new(push_html_reserved_char)
     };
     let mut peekable_char_indices = PeekableCharIndices::new(str_in.char_indices());
     while let Some(c) = peekable_char_indices.next() {

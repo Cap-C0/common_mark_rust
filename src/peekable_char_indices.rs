@@ -21,10 +21,7 @@ impl<'a> Iterator for PeekableCharIndices<'a> {
 // so just return characters from the iterator
 impl<'a> PeekableCharIndices<'a> {
     pub fn new(iter: CharIndices<'a>) -> Self {
-        PeekableCharIndices {
-            iter: iter,
-            peeked: None,
-        }
+        PeekableCharIndices { iter, peeked: None }
     }
 
     pub fn collect_until_offset(&mut self, last_offset: usize) -> String {

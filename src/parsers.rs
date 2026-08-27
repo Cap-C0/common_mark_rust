@@ -1,19 +1,16 @@
+//!  The contract for calling parsers is generally like so:
+//!  - the callee can modify the incoming iterator whether it succeeds or fails. This means that it is
+//!    the callers responsibility to clone the iterator and "backtrack" in the case of failure.
+//!  - Parsers generally return the char_index *after* the last relevant character, along with
+//!    in some cases extra information for callee (ie, is the info wrapped in delimiters.)
+//!
 use crate::{
     parsers::ReferenceLinkType::{Collapsed, Full},
     peekable_char_indices::*,
 };
 
-/**
- *   The contract for calling parsers is generally like so:
- *   - the callee can modify the incoming iterator whether it succeeds or fails. This means that it is
- *     the callers responsibility to clone the iterater and "backtrack" in the case of failure.
- *   - Parsers generally return the char_index *after* the last relevant character, along with
- *     in some cases extra information for callee (ie, is the info wrapped in delimiters.)
- */
-
-pub fn parse_inline_suffix(
-    char_iter: &mut PeekableCharIndices,
-) -> Option<(Option<(usize, usize)>, Option<(usize, usize)>)> {
+pub type InlineLinkSuffix = (Option<(usize, usize)>, Option<(usize, usize)>);
+pub fn parse_inline_suffix(char_iter: &mut PeekableCharIndices) -> Option<InlineLinkSuffix> {
     char_iter.next_if_char_eq('(')?;
 
     char_iter.consume_while(|c| " \t\n".contains(c));

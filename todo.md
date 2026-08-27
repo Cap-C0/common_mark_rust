@@ -1,4 +1,4 @@
-- [ ] new block starts
+- [x] new block starts
   - [x] setext heading
   - [x] thematic break
   - [x] new list item continuing
@@ -8,7 +8,7 @@
   - [x] atx_heading
   - [x] lazy paragraph continuation
   - [x] reference link defs
-- [ ] incorporate tabs
+- [x] incorporate tabs
   - [x] fix space counting code
     - [x] atx_heading
 - [x] implement correct new line code
@@ -19,11 +19,11 @@
     - [x] unicode 
     - [x] html characters
 - [x] create build scripts for unicode properties and json_tests 
-- [ ] inline parsing
+- [x] inline parsing
   - [x] code spans
   - [x] emphasis.
-  - [ ] links
-  - [ ] Images
+  - [x] links
+  - [x] Images
   - [x] Autolinks
   - [x] html
   - [x] soft line break
@@ -38,6 +38,6 @@
 - [x] refactor html block things
 - [x] refactor create new blocks
 - [x] bs escaping in link dests.
-- [ ] disable prev brackets from links.
-- [ ] images
-- [ ] better char writing ergonomics.
+- [x] disable prev brackets from links.
+- [x] images
+- [x] better char writing ergonomics.

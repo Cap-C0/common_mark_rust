@@ -8,7 +8,6 @@ use crate::parsers::ReferenceLinkType::Full;
 use crate::parsers::*;
 use crate::peekable_char_indices::*;
 use crate::string_normalize::normalize_label;
-use core::panic;
 use std::{mem, vec};
 
 include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
@@ -280,7 +279,7 @@ enum InlineTextComponent {
 }
 
 impl InlineTextComponent {
-    fn to_completed_content(&mut self) {
+    fn convert_to_completed_content(&mut self) {
         if matches!(self, TextualContent(..) | CompletedContent(..)) {
             return;
         }
@@ -307,7 +306,8 @@ impl InlineTextComponent {
     //         _ => TextualContent(1),
     //     }
     // }
-    fn to_inline_content(&mut self, char_offset: usize) -> InlineContent {
+    //TODO: make these "to_" functions take ownership
+    fn convert_to_inline_content(&mut self, char_offset: usize) -> InlineContent {
         match self {
             Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
                 Text(char_offset, char_offset + (*total - *consumed))
@@ -356,6 +356,7 @@ impl DLLnode {
 
 // we will be approxiamating a double linked list in rust by having each item in the list keep
 // track of the index of the next item.
+// TODO: make this in to a more proper arena using ops and stuff
 #[derive(Debug, Clone)]
 struct FakeDelimiterDLL {
     // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
@@ -450,38 +451,6 @@ impl FakeDelimiterDLL {
         self.dl_stack[bottom_node_index].index_of_next = Some(self.dl_stack.len() - 1);
         self.dl_stack[top_node_index].index_of_prev = Some(self.dl_stack.len() - 1);
     }
-
-    // returns "pointer" to new node
-    // fn replace_inside_stack_range_including(
-    //     &mut self,
-    //     bottom_node_index: usize,
-    //     top_node_index: usize,
-    //     begin_char_index: usize,
-    //     item: InlineTextComponent,
-    // ) -> usize {
-    //     let new_prev = self.get_index_of_prev(bottom_node_index);
-    //     let new_next = self.get_index_of_next(top_node_index);
-    //     self.dl_stack.push(DLLnode {
-    //         beginning_char_index: begin_char_index,
-    //         inline_component: item,
-    //         index_of_prev: new_prev,
-    //         index_of_next: new_next,
-    //         index_of_this: self.dl_stack.len(),
-    //     });
-    //
-    //     if let Some(prev) = new_prev {
-    //         self.dl_stack[prev].index_of_next = Some(self.dl_stack.len() - 1);
-    //     } else {
-    //         self.initial_index = Some(self.dl_stack.len() - 1)
-    //     }
-    //
-    //     if let Some(next) = new_next {
-    //         self.dl_stack[next].index_of_prev = Some(self.dl_stack.len() - 1);
-    //     } else {
-    //         self.final_index = Some(self.dl_stack.len() - 1)
-    //     }
-    //     self.dl_stack.len() - 1
-    // }
 
     fn delete_stack_above_including(&mut self, node_index: usize) {
         let prev_node_op = self.dl_stack[node_index]
@@ -759,7 +728,7 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                 if matches!(matched_node_itc, LinkOpen(false, ..))
                     || matches!(matched_node_itc, ImgOpen(false, ..))
                 {
-                    matched_node.inline_component.to_completed_content();
+                    matched_node.inline_component.convert_to_completed_content();
                     add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                     delimit_stack.push_back(char_index, BrackClose);
                     text_begin = char_index + 1;
@@ -868,7 +837,7 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                     delimit_stack
                         .get_mut(index_of_matched)
                         .inline_component
-                        .to_completed_content();
+                        .convert_to_completed_content();
                     delimit_stack.push_back(char_index, TextualContent(1));
                     // matched_node.inline_component = matched_node.inline_component.to_text_comp();
                     text_begin = char_index + 1;
@@ -1002,7 +971,7 @@ fn process_emphasis(
                             let nte = stack.get_mut(node_to_eat_index_op.unwrap());
                             emph_children.push(
                                 nte.inline_component
-                                    .to_inline_content(nte.beginning_char_index),
+                                    .convert_to_inline_content(nte.beginning_char_index),
                             );
                             node_to_eat_index_op = nte.index_of_next;
                         }
@@ -1128,7 +1097,7 @@ fn process_emphasis(
                             let nte = stack.get_mut(node_to_eat_index_op.unwrap());
                             emph_children.push(
                                 nte.inline_component
-                                    .to_inline_content(nte.beginning_char_index),
+                                    .convert_to_inline_content(nte.beginning_char_index),
                             );
                             node_to_eat_index_op = nte.index_of_next;
                         }
@@ -1220,7 +1189,7 @@ fn process_emphasis(
         let nte = stack.get_mut(ntei);
         out.push(
             nte.inline_component
-                .to_inline_content(nte.beginning_char_index),
+                .convert_to_inline_content(nte.beginning_char_index),
         );
         ntei_op = nte.index_of_next;
     }

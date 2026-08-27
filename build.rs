@@ -31,10 +31,10 @@ struct TrieNode {
 }
 
 impl TrieNode {
-    pub fn add_str(&mut self, mut string_in: Chars, value: Vec<char>) {
+    pub fn add_str(&mut self, string_in: Chars, value: Vec<char>) {
         let mut current: &mut Self = self;
-        while let Some(nxt_char) = string_in.next() {
-            if current.children.get(&nxt_char).is_none() {
+        for nxt_char in string_in {
+            if current.children.contains_key(&nxt_char) {
                 let new_trie = TrieNode {
                     children: HashMap::new(),
                     value: None,
@@ -51,7 +51,7 @@ impl TrieNode {
         for (character, child) in self.children.iter() {
             string_builder.push_str(&format!("'{}' => ", character));
             child.to_phf_code(string_builder);
-            string_builder.push_str(",");
+            string_builder.push(',');
         }
         string_builder.push_str("},\n");
         string_builder.push_str("value: ");
@@ -123,7 +123,7 @@ fn main() {
         "https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt",
     );
 
-    if needs_regen(&unicode_data, &unicode_categories_funs_path) {
+    if needs_regen(unicode_data, &unicode_categories_funs_path) {
         let lines = io::BufReader::new(File::open(unicode_data).unwrap()).lines();
         let mut punctuations: Vec<(char, char)> = vec![];
         let mut symbols: Vec<(char, char)> = vec![];
@@ -135,7 +135,7 @@ fn main() {
             let line = line.unwrap();
             let mut split_line = line.split(';');
             let num = u32::from_str_radix(split_line.next().unwrap(), 16).unwrap();
-            let cat = split_line.skip(1).next().unwrap();
+            let cat = split_line.nth(1).unwrap();
             match &cat.chars().next() {
                 Some('P') => {
                     if punc_range.0 == 0 {
@@ -208,8 +208,8 @@ fn main() {
     println!("cargo::rerun-if-changed=entities.json");
     let html_entities_funs = Path::new(&out_dir).join("html_entities.rs");
     let html_entities = Path::new("entities.json");
-    get_file_if_doesnt_exist(&html_entities, "https://html.spec.whatwg.org/entities.json");
-    if needs_regen(&html_entities, &html_entities_funs) {
+    get_file_if_doesnt_exist(html_entities, "https://html.spec.whatwg.org/entities.json");
+    if needs_regen(html_entities, &html_entities_funs) {
         let char_maps: HashMap<String, CharacterInfo> =
             serde_json::from_str(&fs::read_to_string(html_entities).unwrap()).unwrap();
         // because we are doing a char by char reading, Tries are better than str -> char map. (fail sooner)
@@ -258,7 +258,7 @@ fn main() {
         "https://www.unicode.org/Public/UCD/latest/ucd/CaseFolding.txt",
     );
 
-    if needs_regen(&unicode_case_data, &unicode_case_funs) {
+    if needs_regen(unicode_case_data, &unicode_case_funs) {
         let lines = io::BufReader::new(File::open(unicode_case_data).unwrap()).lines();
 
         let mut mapping: Vec<(char, Vec<char>)> = vec![];
@@ -366,7 +366,7 @@ fn needs_regen(input_path: &Path, output_path: &Path) -> bool {
     let output_mtime = fs::metadata(output_path).and_then(|m| m.modified()).ok();
 
     match (input_mtime, output_mtime) {
-        (Some(i), Some(o)) => return i > o, //
-        _ => true,                          // otherwise maybe output doesnt exist yet so do run it
+        (Some(i), Some(o)) => i > o, //
+        _ => true,                   // otherwise maybe output doesnt exist yet so do run it
     }
 }
