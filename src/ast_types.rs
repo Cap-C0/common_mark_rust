@@ -88,19 +88,19 @@ impl Block {
     //     }
     // }
 
-    pub fn parse_inlines(&mut self, lrd_table: &LRDTable) {
-        match self {
-            Document(blocks) | BlockQuote(blocks, _) | List(blocks, ..) | ListItem(blocks, ..) => {
-                for b in blocks {
-                    b.parse_inlines(lrd_table);
-                }
-            }
-            Heading(il, _) | Paragraph(il, ..) => {
-                il.fill_content(lrd_table);
-            }
-            _ => (),
-        }
-    }
+    // pub fn parse_inlines(&mut self, lrd_table: &LRDTable) {
+    //     match self {
+    //         Document(blocks) | BlockQuote(blocks, _) | List(blocks, ..) | ListItem(blocks, ..) => {
+    //             for b in blocks {
+    //                 b.parse_inlines(lrd_table);
+    //             }
+    //         }
+    //         Heading(il, _) | Paragraph(il, ..) => {
+    //             il.fill_content(lrd_table);
+    //         }
+    //         _ => (),
+    //     }
+    // }
 
     pub fn deepest_matched_blockquote(&mut self, max_depth: usize) -> usize {
         let mut current_depth = 0;

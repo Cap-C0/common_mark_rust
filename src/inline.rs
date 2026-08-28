@@ -15,7 +15,6 @@ include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Inline {
     pub string: String,
-    pub content: Vec<InlineContent>,
 }
 
 impl Inline {
@@ -23,18 +22,17 @@ impl Inline {
         Inline {
             // chars: vec![],
             string: str_in,
-            content: vec![],
         }
     }
 
-    pub fn fill_content(&mut self, lrd_table: &LRDTable) {
-        // dbg!("called_fill_content");
-        assert!(self.content.is_empty());
-        self.content = parse_inline(&self.string, lrd_table)
-    }
+    // pub fn fill_content(&mut self, lrd_table: &LRDTable) {
+    //     // dbg!("called_fill_content");
+    //     assert!(self.content.is_empty());
+    //     self.content = parse_inline(&self.string, lrd_table)
+    // }
 
     pub fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable) {
-        for ic in &self.content {
+        for ic in parse_inline(&self.string, lrd_table) {
             ic.to_html(&self.string, string_builder, lrd_table);
         }
     }
@@ -46,39 +44,39 @@ impl Inline {
 //TODO: stop holding char_offsets,
 //thats literally what &str is for
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum InlineContent {
+pub enum InlineContent<'a> {
     Softbreak,
     Hardbreak,
-    Text(usize, usize),
-    Emph(Vec<InlineContent>),
-    Strong(Vec<InlineContent>),
+    Text(&'a str),
+    Emph(Vec<InlineContent<'a>>),
+    Strong(Vec<InlineContent<'a>>),
     /// is_image, href, title, link_text
     //TODO: make this work with reference links
     InlineLink(
         bool,
-        Option<(usize, usize)>,
-        Option<(usize, usize)>,
-        Vec<InlineContent>,
+        Option<&'a str>,
+        Option<&'a str>,
+        Vec<InlineContent<'a>>,
     ),
-    ReferenceLink(bool, String, Vec<InlineContent>),
+    ReferenceLink(bool, String, Vec<InlineContent<'a>>),
     /// src, title, link_text
     // Image((usize, usize), (usize, usize), Vec<InlineContent>),
     /// href and text, is_email
-    AutoLink((usize, usize), bool),
+    AutoLink(&'a str, bool),
     /// start, end char index (exclusive)
-    HTMLTag((usize, usize)),
-    Code((usize, usize)),
+    HTMLTag(&'a str),
+    Code(&'a str),
     // for use when swapping memory
     Dummy,
 }
 
-impl InlineContent {
+impl<'a> InlineContent<'a> {
     pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
         match self {
             Softbreak => string_builder.push('\n'),
             Hardbreak => string_builder.push_str("<br />\n"),
-            Text(start, end) => {
-                push_chars_with_entities_and_bs(&string_array[*start..*end], string_builder, false);
+            Text(string) => {
+                push_chars_with_entities_and_bs(string, string_builder, false);
             }
             Emph(inline_contents) => {
                 string_builder.push_str("<em>");
@@ -97,45 +95,29 @@ impl InlineContent {
             InlineLink(is_image, dest_op, tit_op, inline_contents) => {
                 if *is_image {
                     string_builder.push_str("<img src=\"");
-                    if let Some((start, end)) = dest_op {
-                        push_chars_with_entities_and_bs(
-                            &string_array[*start..*end],
-                            string_builder,
-                            true,
-                        );
+                    if let Some(dest_string) = dest_op {
+                        push_chars_with_entities_and_bs(*dest_string, string_builder, true);
                     }
                     string_builder.push_str("\" alt=\"");
                     for ic in inline_contents {
                         ic.to_alt_text(string_array, string_builder);
                     }
                     string_builder.push_str("\" ");
-                    if let Some((start, end)) = tit_op {
+                    if let Some(tit_string) = tit_op {
                         string_builder.push_str("title=\"");
-                        push_chars_with_entities_and_bs(
-                            &string_array[*start..*end],
-                            string_builder,
-                            false,
-                        );
+                        push_chars_with_entities_and_bs(tit_string, string_builder, false);
                         string_builder.push_str("\" ");
                     }
                     string_builder.push_str("/>");
                 } else {
                     string_builder.push_str("<a href=\"");
-                    if let Some((start, end)) = dest_op {
-                        push_chars_with_entities_and_bs(
-                            &string_array[*start..*end],
-                            string_builder,
-                            true,
-                        );
+                    if let Some(dest_string) = dest_op {
+                        push_chars_with_entities_and_bs(dest_string, string_builder, true);
                     }
                     string_builder.push('\"');
-                    if let Some((start, end)) = tit_op {
+                    if let Some(tit_string) = tit_op {
                         string_builder.push_str(" title=\"");
-                        push_chars_with_entities_and_bs(
-                            &string_array[*start..*end],
-                            string_builder,
-                            false,
-                        );
+                        push_chars_with_entities_and_bs(tit_string, string_builder, false);
                         string_builder.push('\"');
                     }
                     string_builder.push('>');
@@ -177,28 +159,28 @@ impl InlineContent {
                     string_builder.push_str("</a>");
                 }
             }
-            AutoLink((first_char, last_char), is_email) => {
+            AutoLink(link_string, is_email) => {
                 string_builder.push_str("<a href=\"");
                 if *is_email {
                     string_builder.push_str("mailto:");
                 }
-                for c in string_array[*first_char..*last_char].chars() {
+                for c in link_string.chars() {
                     push_character_in_uri(c, string_builder);
                 }
                 string_builder.push_str("\">");
-                for c in string_array[*first_char..*last_char].chars() {
+                for c in link_string.chars() {
                     push_html_reserved_char(c, string_builder);
                 }
                 string_builder.push_str("</a>");
             }
-            HTMLTag((start, end)) => {
-                for c in string_array[*start..*end].chars() {
+            HTMLTag(html_string) => {
+                for c in html_string.chars() {
                     string_builder.push(c);
                 }
             }
-            Code((start, end)) => {
+            Code(code_string) => {
                 string_builder.push_str("<code>");
-                for c in string_array[*start..*end].chars() {
+                for c in code_string.chars() {
                     if c == '\n' {
                         push_html_reserved_char(' ', string_builder);
                     } else {
@@ -211,49 +193,49 @@ impl InlineContent {
         }
     }
 
-    pub fn to_alt_text(&self, string_array: &str, string_builder: &mut String) {
+    pub fn to_alt_text(&self, string_array: &str, _string_builder: &mut String) {
         match self {
-            Softbreak => string_builder.push('\n'),
-            Hardbreak => string_builder.push('\n'),
-            Text(start, end) => {
-                push_chars_with_entities_and_bs(&string_array[*start..*end], string_builder, false);
+            Softbreak => _string_builder.push('\n'),
+            Hardbreak => _string_builder.push('\n'),
+            Text(text_string) => {
+                push_chars_with_entities_and_bs(text_string, _string_builder, false);
             }
             Emph(inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(string_array, string_builder);
+                    ic.to_alt_text(string_array, _string_builder);
                 }
             }
             Strong(inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(string_array, string_builder);
+                    ic.to_alt_text(string_array, _string_builder);
                 }
             }
             InlineLink(.., inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(string_array, string_builder);
+                    ic.to_alt_text(string_array, _string_builder);
                 }
             }
             ReferenceLink(.., inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(string_array, string_builder);
+                    ic.to_alt_text(string_array, _string_builder);
                 }
             }
-            AutoLink((first_char, last_char), ..) => {
-                for c in string_array[*first_char..*last_char].chars() {
-                    push_html_reserved_char(c, string_builder);
+            AutoLink(link_string, ..) => {
+                for c in link_string.chars() {
+                    push_html_reserved_char(c, _string_builder);
                 }
             }
-            HTMLTag((start, end)) => {
-                for c in string_array[*start..*end].chars() {
-                    string_builder.push(c);
+            HTMLTag(html_string) => {
+                for c in html_string.chars() {
+                    _string_builder.push(c);
                 }
             }
-            Code((start, end)) => {
-                for c in string_array[*start..*end].chars() {
+            Code(code_string) => {
+                for c in code_string.chars() {
                     if c == '\n' {
-                        push_html_reserved_char(' ', string_builder);
+                        push_html_reserved_char(' ', _string_builder);
                     } else {
-                        push_html_reserved_char(c, string_builder);
+                        push_html_reserved_char(c, _string_builder);
                     }
                 }
             }
@@ -263,7 +245,7 @@ impl InlineContent {
 }
 
 #[derive(Debug, Clone)]
-enum InlineTextComponent {
+enum InlineTextComponent<'a> {
     /// Total_count,Count_consumed, potential_opener, potential_closer
     Asts(usize, usize, bool, bool),
     /// Total_count,Count_consumed, potential_opener, potential_closer
@@ -275,10 +257,10 @@ enum InlineTextComponent {
     /// Total_count
     /// Offset to last char (exclusive)
     TextualContent(usize),
-    CompletedContent(InlineContent),
+    CompletedContent(InlineContent<'a>),
 }
 
-impl InlineTextComponent {
+impl<'a> InlineTextComponent<'a> {
     fn convert_to_completed_content(&mut self) {
         if matches!(self, TextualContent(..) | CompletedContent(..)) {
             return;
@@ -307,49 +289,53 @@ impl InlineTextComponent {
     //     }
     // }
     //TODO: make these "to_" functions take ownership
-    fn convert_to_inline_content(&mut self, char_offset: usize) -> InlineContent {
+    fn convert_to_inline_content(
+        &mut self,
+        char_offset: usize,
+        base_string: &'a str,
+    ) -> InlineContent<'a> {
         match self {
             Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
-                Text(char_offset, char_offset + (*total - *consumed))
+                Text(&base_string[char_offset..char_offset + (*total - *consumed)])
             }
-            TextualContent(count) => Text(char_offset, char_offset + *count),
-            ImgOpen(..) => Text(char_offset, char_offset + 2),
+            TextualContent(count) => Text(&base_string[char_offset..char_offset + *count]),
+            ImgOpen(..) => Text(&base_string[char_offset..char_offset + 2]),
             CompletedContent(c) => {
                 let mut dummy = Dummy;
                 mem::swap(c, &mut dummy);
                 dummy
             }
-            _ => Text(char_offset, char_offset + 1),
+            _ => Text(&base_string[char_offset..char_offset + 1]),
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct DLLnode {
+struct DLLnode<'a> {
     //this indexes into the string at the start of a char, the design of the program should
     //guarantee that this doesnt panic. Namely by only considering usizes that come
     //immediately from a char_indices() and only subtracting from that offset when the character before that is known.
     beginning_char_index: usize,
-    inline_component: InlineTextComponent,
+    inline_component: InlineTextComponent<'a>,
     index_of_prev: Option<usize>,
     index_of_next: Option<usize>,
     index_of_this: usize, // this is helpful for getting around borrow checker shenanigans
 }
 
-impl DLLnode {
+impl<'a> DLLnode<'a> {
     fn new(
-        begin_index: usize,
-        component: InlineTextComponent,
-        prev_index: Option<usize>,
-        next_index: Option<usize>,
-        this_index: usize,
+        beginning_char_index: usize,
+        inline_component: InlineTextComponent<'a>,
+        index_of_prev: Option<usize>,
+        index_of_next: Option<usize>,
+        index_of_this: usize,
     ) -> Self {
         DLLnode {
-            beginning_char_index: begin_index,
-            inline_component: component,
-            index_of_prev: prev_index,
-            index_of_next: next_index,
-            index_of_this: this_index,
+            beginning_char_index,
+            inline_component,
+            index_of_prev,
+            index_of_next,
+            index_of_this,
         }
     }
 }
@@ -358,17 +344,17 @@ impl DLLnode {
 // track of the index of the next item.
 // TODO: make this in to a more proper arena using ops and stuff
 #[derive(Debug, Clone)]
-struct FakeDelimiterDLL {
+struct FakeDelimiterDLL<'a> {
     // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
-    dl_stack: Vec<DLLnode>,
+    dl_stack: Vec<DLLnode<'a>>,
     // Since we only push to the dll at the beginning, we do not need to keep track of
     // "freeing" things for later. (monotonic?)
     initial_index: Option<usize>,
     final_index: Option<usize>,
 }
 
-impl FakeDelimiterDLL {
-    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent) {
+impl<'a> FakeDelimiterDLL<'a> {
+    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent<'a>) {
         if self.initial_index.is_none() {
             self.initial_index = Some(self.dl_stack.len());
             self.final_index = Some(self.dl_stack.len());
@@ -404,19 +390,19 @@ impl FakeDelimiterDLL {
     //     self.final_index.map(|i| &self.dl_stack[i])
     // }
 
-    fn get_last_mut(&mut self) -> Option<&mut DLLnode> {
+    fn get_last_mut(&mut self) -> Option<&mut DLLnode<'a>> {
         self.final_index.map(|i| &mut self.dl_stack[i])
     }
 
-    fn get(&self, index: usize) -> &DLLnode {
+    fn get(&self, index: usize) -> &DLLnode<'_> {
         &self.dl_stack[index]
     }
 
-    fn get_mut(&mut self, index: usize) -> &mut DLLnode {
+    fn get_mut(&mut self, index: usize) -> &mut DLLnode<'a> {
         &mut self.dl_stack[index]
     }
 
-    fn get_next(&self, node: &DLLnode) -> Option<&DLLnode> {
+    fn get_next(&self, node: &DLLnode) -> Option<&DLLnode<'_>> {
         node.index_of_next.map(|i| &self.dl_stack[i])
     }
 
@@ -439,7 +425,7 @@ impl FakeDelimiterDLL {
         bottom_node_index: usize,
         top_node_index: usize,
         begin_char_index: usize,
-        item: InlineTextComponent,
+        item: InlineTextComponent<'a>,
     ) {
         self.dl_stack.push(DLLnode {
             beginning_char_index: begin_char_index,
@@ -516,20 +502,11 @@ impl FakeDelimiterDLL {
 
 // think about what functionality we will need as we go along stack
 
-//start with just emphasis and code, then do links
-//adjust the code to 2 phases, where we put all delimiters in the stack at once,
-//then go forward through the stack to create
-//
 //BackTick code spans, auto links, raw_html >
 //brackets in link text >
 //emph markers.
-//
-// Indentation and underlying structures like quotes (>) make this a bit harder to think about
-// for now, I will be cloning the strings from the source string into the Inline structs.
-pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent> {
-    // pointer, _, offset_to_next, offset_to_prev
-    // dbg!("called parse inline!");
-    let mut delimit_stack = FakeDelimiterDLL {
+pub fn parse_inline<'a>(inline_str: &'a str, lrd_table: &'a LRDTable) -> Vec<InlineContent<'a>> {
+    let mut delimit_stack: FakeDelimiterDLL<'a> = FakeDelimiterDLL {
         dl_stack: vec![],
         initial_index: None,
         final_index: None,
@@ -604,13 +581,13 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                 );
                 let mut entirely_space = starts_with_space;
                 let mut last_is_space = starts_with_space;
-                'search_for_matching_tc: while let Some((start_pos, c)) =
+                'search_for_matching_tc: while let Some((closing_ticks_start_pos, c)) =
                     matching_tick_count_search_iter.next_and_index()
                 {
                     if c == '`' {
                         matching_tick_count_search_iter.consume_while_char_eq('`');
                         let closing_tick_count =
-                            matching_tick_count_search_iter.offset() - start_pos;
+                            matching_tick_count_search_iter.offset() - closing_ticks_start_pos;
 
                         if closing_tick_count == initial_tick_count {
                             char_iter = matching_tick_count_search_iter;
@@ -622,13 +599,13 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                                 };
                             delimit_stack.push_back(
                                 char_index,
-                                CompletedContent(Code((
-                                    char_index + initial_tick_count + remove_space,
-                                    start_pos - remove_space,
-                                ))),
+                                CompletedContent(Code(
+                                    &inline_str[char_index + initial_tick_count + remove_space
+                                        ..closing_ticks_start_pos - remove_space],
+                                )),
                             );
                             code_completed = true;
-                            text_begin = start_pos + closing_tick_count;
+                            text_begin = closing_ticks_start_pos + closing_tick_count;
                             break 'search_for_matching_tc;
                         }
                     }
@@ -749,11 +726,19 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                     dbg!(parse_inline_suffix(&mut try_to_inline_link_iter))
                 {
                     let bci = matched_node.beginning_char_index;
-                    let link_displayed =
-                        process_emphasis(Some(matched_node.index_of_this), &mut delimit_stack);
+                    let link_displayed = process_emphasis(
+                        Some(matched_node.index_of_this),
+                        &mut delimit_stack,
+                        inline_str,
+                    );
                     delimit_stack.push_back(
                         bci,
-                        CompletedContent(InlineLink(is_image, dest_op, tit_op, link_displayed)),
+                        CompletedContent(InlineLink(
+                            is_image,
+                            dest_op.map(|(start, end)| &inline_str[start..end]),
+                            tit_op.map(|(start, end)| &inline_str[start..end]),
+                            link_displayed,
+                        )),
                     );
                     char_iter = try_to_inline_link_iter;
                     text_begin = char_iter.offset();
@@ -772,6 +757,7 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                                 let link_displayed = process_emphasis(
                                     Some(matched_node.index_of_this),
                                     &mut delimit_stack,
+                                    inline_str,
                                 );
                                 delimit_stack.push_back(
                                     bci,
@@ -797,6 +783,7 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                                 let link_displayed = process_emphasis(
                                     Some(matched_node.index_of_this),
                                     &mut delimit_stack,
+                                    inline_str,
                                 );
                                 delimit_stack.push_back(
                                     bci,
@@ -820,8 +807,11 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                     );
                     if lrd_table.contains_key(&norm_lab) {
                         let bci = matched_node.beginning_char_index;
-                        let link_displayed =
-                            process_emphasis(Some(matched_node.index_of_this), &mut delimit_stack);
+                        let link_displayed = process_emphasis(
+                            Some(matched_node.index_of_this),
+                            &mut delimit_stack,
+                            inline_str,
+                        );
                         delimit_stack.push_back(
                             bci,
                             CompletedContent(ReferenceLink(is_image, norm_lab, link_displayed)),
@@ -866,14 +856,19 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
                 if let Some((final_offset, is_email)) = parse_autolink(&mut autolink_iter) {
                     delimit_stack.push_back(
                         char_index,
-                        CompletedContent(AutoLink((char_index + 1, final_offset - 1), is_email)),
+                        CompletedContent(AutoLink(
+                            &inline_str[char_index + 1..final_offset - 1],
+                            is_email,
+                        )),
                     );
                     char_iter = autolink_iter;
                     text_begin = char_iter.offset();
                     preceding_char = '>'
                 } else if let Some(tag_end) = parse_html_tag(&mut html_iter) {
-                    delimit_stack
-                        .push_back(char_index, CompletedContent(HTMLTag((char_index, tag_end))));
+                    delimit_stack.push_back(
+                        char_index,
+                        CompletedContent(HTMLTag(&inline_str[char_index..tag_end])),
+                    );
                     char_iter = html_iter;
                     text_begin = tag_end;
                     preceding_char = '>'
@@ -894,13 +889,14 @@ pub fn parse_inline(inline_str: &str, lrd_table: &LRDTable) -> Vec<InlineContent
         inline_str.len() - space_count,
     );
 
-    process_emphasis(None, &mut delimit_stack)
+    process_emphasis(None, &mut delimit_stack, inline_str)
 }
 
-fn process_emphasis(
+fn process_emphasis<'a>(
     stack_bottom: Option<usize>,
-    stack: &mut FakeDelimiterDLL,
-) -> Vec<InlineContent> {
+    stack: &mut FakeDelimiterDLL<'a>,
+    inline_str: &'a str,
+) -> Vec<InlineContent<'a>> {
     // dbg!("processing emph");
     dbg!(&stack);
     dbg!(&stack_bottom);
@@ -970,8 +966,10 @@ fn process_emphasis(
                         }) {
                             let nte = stack.get_mut(node_to_eat_index_op.unwrap());
                             emph_children.push(
-                                nte.inline_component
-                                    .convert_to_inline_content(nte.beginning_char_index),
+                                nte.inline_component.convert_to_inline_content(
+                                    nte.beginning_char_index,
+                                    inline_str,
+                                ),
                             );
                             node_to_eat_index_op = nte.index_of_next;
                         }
@@ -1096,8 +1094,10 @@ fn process_emphasis(
                         }) {
                             let nte = stack.get_mut(node_to_eat_index_op.unwrap());
                             emph_children.push(
-                                nte.inline_component
-                                    .convert_to_inline_content(nte.beginning_char_index),
+                                nte.inline_component.convert_to_inline_content(
+                                    nte.beginning_char_index,
+                                    inline_str,
+                                ),
                             );
                             node_to_eat_index_op = nte.index_of_next;
                         }
@@ -1189,7 +1189,7 @@ fn process_emphasis(
         let nte = stack.get_mut(ntei);
         out.push(
             nte.inline_component
-                .convert_to_inline_content(nte.beginning_char_index),
+                .convert_to_inline_content(nte.beginning_char_index, inline_str),
         );
         ntei_op = nte.index_of_next;
     }

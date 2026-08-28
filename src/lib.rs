@@ -15,12 +15,12 @@ pub fn markdown_to_html(markdown: &str) -> String {
     // TODO figure out how not split lines
     // use raw stringes all the way!
 
-    let (mut document, lrd_table) = create_block_structure(markdown);
+    let (document, lrd_table) = create_block_structure(markdown);
 
-    dbg!(&lrd_table);
-    document.parse_inlines(&lrd_table);
-
-    dbg!(&document);
+    // dbg!(&lrd_table);
+    // document.parse_inlines(&lrd_table);
+    //
+    // dbg!(&document);
 
     document.to_html(&lrd_table)
 }
