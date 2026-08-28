@@ -906,10 +906,10 @@ fn process_emphasis<'a>(
         stack_bottom.map(|dll_pointer| stack.get(dll_pointer).beginning_char_index);
     // only set op_bot when we find a non_matched closer_delimiter
     // set it as the *CHARACTER_OFFSET* in the corresponding vec of chars.
-    let openers_bottom_asts_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let openers_bottom_asts_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let openers_bottom_unds_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let openers_bottom_unds_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
+    let mut openers_bottom_asts_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
+    let mut openers_bottom_asts_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
+    let mut openers_bottom_unds_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
+    let mut openers_bottom_unds_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
     // index_in_fakedldll, char_offset it points to
     let mut unds_op_stack: Vec<(usize, usize)> = vec![];
     let mut asts_op_stack: Vec<(usize, usize)> = vec![];
@@ -922,10 +922,10 @@ fn process_emphasis<'a>(
                 dbg!(&asts_op_stack);
                 if pot_clos && !asts_op_stack.is_empty() {
                     let mut asts_op_stack_offset = asts_op_stack.len() - 1;
-                    let this_op_bottom = &mut if pot_op {
-                        openers_bottom_asts_and_opening[total_count % 3]
+                    let this_op_bottom = if pot_op {
+                        &mut openers_bottom_asts_and_opening[total_count % 3]
                     } else {
-                        openers_bottom_asts_not_opening[total_count % 3]
+                        &mut openers_bottom_asts_not_opening[total_count % 3]
                     };
                     let mut matching_dl_index_op = None;
                     while this_op_bottom.is_none_or(|x| asts_op_stack[asts_op_stack_offset].1 > x) {
@@ -1050,10 +1050,10 @@ fn process_emphasis<'a>(
                 dbg!(&unds_op_stack);
                 if pot_clos && !unds_op_stack.is_empty() {
                     let mut unds_op_stack_offset = unds_op_stack.len() - 1;
-                    let this_op_bottom = &mut if pot_op {
-                        openers_bottom_unds_and_opening[total_count % 3]
+                    let this_op_bottom = if pot_op {
+                        &mut openers_bottom_unds_and_opening[total_count % 3]
                     } else {
-                        openers_bottom_unds_not_opening[total_count % 3]
+                        &mut openers_bottom_unds_not_opening[total_count % 3]
                     };
                     let mut matching_dl_index_op = None;
                     while this_op_bottom.is_none_or(|x| unds_op_stack[unds_op_stack_offset].1 > x) {
