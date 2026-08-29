@@ -32,27 +32,24 @@ pub fn create_block_structure(markdown: &str) -> (AbstractSyntaxTree<String>, LR
     let mut parsing_state = ParsingState {
         abstract_syntax_tree: AbstractSyntaxTree::new(),
         lrd_table,
-        line_state: LineState::new(line_0),
         open_block_id: start_id,
         open_par_above: false,
-        open_par_exists: false,
+        continuable_par_exists: false,
         blank_line_depth: None,
         line_number: 0,
     };
 
     for line in lines {
+        let mut line_state = LineState::new(line);
         // dbg!(&parsing_state);
         parsing_state.set_new_line_state();
-        check_tree_state(&mut parsing_state);
-        parsing_state.set_open_par_exists();
-        create_new_block_starts(&mut parsing_state);
+        check_tree_state(&mut parsing_state, &mut line_state);
+        create_new_block_starts(&mut parsing_state, &mut line_state);
         // dbg!(line);
-        parsing_state.line_state = LineState::new(line)
     }
     // dbg!(&parsing_state);
     parsing_state.set_new_line_state();
     check_tree_state(&mut parsing_state);
-    parsing_state.set_open_par_exists();
     create_new_block_starts(&mut parsing_state);
     close_paragraph(&mut parsing_state);
     (parsing_state.abstract_syntax_tree, parsing_state.lrd_table)
@@ -64,10 +61,9 @@ struct ParsingState<'a> {
     // current_line_number: usize,
     abstract_syntax_tree: AbstractSyntaxTree<String>,
     lrd_table: LRDTable,
-    line_state: LineState<'a>,
     open_block_id: NodeId,
     open_par_above: bool,
-    open_par_exists: bool,
+    continuable_par_exists: bool,
     // at what "level" was a blank line seen, important
     // for telling what which list block gets loosened in nested lists.
     blank_line_depth: Option<usize>,
@@ -75,34 +71,14 @@ struct ParsingState<'a> {
 }
 
 impl<'a> ParsingState<'a> {
-    // fn set_open_par_above(&mut self) {
-    //     self.open_par_above = matches!(
-    //         self.abstract_syntax_tree.get_block(self.open_block_id),
-    //         Paragraph(_, true)
-    //     );
-    // }
-    //
-    // fn set_open_par_exists(&mut self) {
-    //     self.open_par_exists = matches!(
-    //         self.abstract_syntax_tree.get_last_block(),
-    //         Paragraph(_, true)
-    //     );
-    // }
-
-    fn set_open_pars(&mut self) {
-        self.set_open_par_above();
-        self.set_open_par_exists();
-    }
-
     pub fn get_open_block(&mut self) -> &mut Block {
         self.abstract_syntax_tree.get_block(self.open_block_depth)
     }
 
     fn set_new_line_state(&mut self) {
-        self.open_block_depth = 0;
         self.line_number += 1;
         self.open_par_above = false;
-        self.open_par_exists = false;
+        self.continuable_par_exists = false;
     }
 }
 
@@ -149,7 +125,7 @@ impl<'a> PeekableCharIndices<usize> for LineState<'a> {
 impl<'a> LineState<'a> {
     fn new(line_in: &'a str) -> Self {
         LineState {
-            char_iter: BorrowedStringPCI::new(line_in),
+            char_iter: line_in.into(),
             effective_column_number: 0,
             space_from_last_structure: 0,
         }
@@ -198,101 +174,87 @@ mod test_ls {
     }
 }
 
-fn check_tree_state(parsing_state: &mut ParsingState) {
+// this should:
+// - check continuation_conditions for the tree above.
+// - check for lazily continuable paragraphs.
+fn check_tree_state(parsing_state: &mut ParsingState, line_state: &mut LineState) {
     let mut current_block_id = parsing_state.abstract_syntax_tree.get_head_id();
-    let mut continuation_conditions_satisfied = true;
-    let mut current_block = &parsing_state.abstract_syntax_tree;
-    let line_state = &mut parsing_state.line_state;
+    let mut ccs_still_satisfied = true;
     // println!("called ccc!");
-    while let Some(current_block_id) = parsing_state
+    while let Some(next_block_id) = parsing_state
         .abstract_syntax_tree
         .get_last_child_id(current_block_id)
-    {}
-    'outer: loop {
-        match current_block {
-            Document(blocks) => match blocks.last() {
-                None => break,
-                Some(b) => {
-                    // println!("has children!");
-                    current_block = b;
-                }
-            },
-            BlockQuote(blocks, is_open) => {
-                if !*is_open {
-                    break 'outer;
-                }
-                line_state.consume_indent_until_sfls_ge(4);
-                if line_state.space_from_last_structure <= 3 && block_quote_encountered(line_state)
-                {
-                    parsing_state.open_block_depth += 1;
-                    match blocks.last() {
-                        None => break 'outer,
-                        Some(b) => {
-                            current_block = b;
-                            continue 'outer;
+    {
+        current_block_id = next_block_id;
+        if ccs_still_satisfied {
+            match parsing_state.abstract_syntax_tree.get_block(next_block_id) {
+                Document => unreachable!(),
+                BlockQuote(is_open) => {
+                    if !*is_open {
+                        ccs_still_satisfied = false
+                    } else {
+                        line_state.consume_indent_until_sfls_ge(4);
+                        //block_quote_encountered is reliant on a single char,
+                        //so line space preserving isn't really needed
+                        if line_state.space_from_last_structure <= 3
+                            && block_quote_encountered(line_state)
+                        {
+                            parsing_state.open_block_id = next_block_id;
                         }
                     }
-                } else {
-                    break 'outer;
                 }
-            }
-            List(list_items, _, _, _) => {
-                parsing_state.open_block_depth += 1;
-                // lists are guaranteed to have at least one item
-                current_block = list_items.last().unwrap();
-            }
-            ListItem(blocks, continuable, indent_amount) => {
-                if !continuable {
-                    break 'outer;
+                List(_, _, _) => {
+                    parsing_state.open_block_id = next_block_id;
                 }
-                let old_line_state = line_state.clone();
-                line_state.consume_indent_until_sfls_ge(*indent_amount);
-                //TODO: make this work with blank lines too?
-                if line_state.space_from_last_structure >= *indent_amount || line_state.is_empty() {
-                    line_state.space_from_last_structure -=
-                        std::cmp::min(*indent_amount, line_state.space_from_last_structure);
-                    parsing_state.open_block_depth += 1;
-                    match blocks.last() {
-                        None => break 'outer,
-                        Some(b) => {
-                            current_block = b;
+                ListItem(continuable, indent_amount) => {
+                    if !*continuable {
+                        ccs_still_satisfied = false;
+                    } else {
+                        let old_line_state = line_state.clone();
+                        line_state.consume_indent_until_sfls_ge(*indent_amount);
+                        if line_state.space_from_last_structure >= *indent_amount
+                            || line_state.is_empty()
+                        {
+                            line_state.space_from_last_structure -=
+                                std::cmp::min(*indent_amount, line_state.space_from_last_structure);
+                            parsing_state.open_block_id = next_block_id;
+                        } else {
+                            ccs_still_satisfied = false;
+                            *line_state = old_line_state;
                         }
                     }
-                } else {
-                    *line_state = old_line_state;
-                    break 'outer;
                 }
-            }
-            Heading(_, _) => break,
-            Paragraph(_, is_open) => {
-                if *is_open {
-                    parsing_state.open_block_depth += 1;
-                    parsing_state.open_par_above = true;
+                Heading(_, _) => ccs_still_satisfied = false,
+                Paragraph(_, is_open) => {
+                    ccs_still_satisfied = false;
+                    if *is_open {
+                        parsing_state.open_block_id = next_block_id;
+                        parsing_state.open_par_above = true;
+                    }
                 }
-                break;
-            }
-            ThematicBreak => break,
-            IndentedCodeBlock(_, _) => {
-                line_state.consume_indent_until_sfls_ge(4);
-                if line_state.space_from_last_structure >= 4 || line_state.is_empty() {
-                    parsing_state.open_block_depth += 1;
+                ThematicBreak => ccs_still_satisfied = false,
+                IndentedCodeBlock(_, _) => {
+                    ccs_still_satisfied = false;
+                    line_state.consume_indent_until_sfls_ge(4);
+                    if line_state.space_from_last_structure >= 4 || line_state.is_empty() {
+                        parsing_state.open_block_id = next_block_id;
+                    }
                 }
-                break;
-            }
-            FencedCodeBlock(_, is_open, _, _, _, _) => {
-                if *is_open {
-                    parsing_state.open_block_depth += 1;
+                FencedCodeBlock(_, is_open, _, _, _, _) | HTMLBlock(_, is_open, _) => {
+                    ccs_still_satisfied = false;
+                    if *is_open {
+                        parsing_state.open_block_id = next_block_id;
+                    }
                 }
-                break;
-            }
-            HTMLBlock(_, is_open, _) => {
-                if *is_open {
-                    parsing_state.open_block_depth += 1;
-                }
-                break;
             }
         }
     }
+    parsing_state.continuable_par_exists |= matches!(
+        parsing_state
+            .abstract_syntax_tree
+            .get_block(current_block_id),
+        Paragraph(_, true)
+    );
 }
 
 fn thematic_break_encountered(char_iter: &mut LineState) -> bool {
@@ -489,8 +451,11 @@ fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block> {
     Some(Heading(Inline::new(str_out), pound_count))
 }
 
-fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
-    let line_state = &mut parsing_state.line_state.clone();
+fn html_start_encountered(
+    line_state: &mut LineState,
+    open_par_exists: bool,
+    space_from_last_structure: usize,
+) -> Option<Block<String>> {
     let simple_starts_with = |target_str: &'static str| -> Box<dyn Fn(&mut LineState) -> bool> {
         Box::new(move |char_iter: &mut LineState| -> bool {
             let mut chars_seen = 0;
@@ -558,7 +523,7 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
         let mut line_state_clone = line_state.clone();
         if start_con(&mut line_state_clone) {
             let mut string_out: String = String::new();
-            for _ in 0..parsing_state.line_state.space_from_last_structure {
+            for _ in 0..space_from_last_structure {
                 string_out.push(' ');
             }
             for c in &mut *line_state {
@@ -657,7 +622,7 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
                     && line_state_clone.next_if_char_eq('>').is_some()))
         {
             let mut string_out = String::new();
-            for _ in 0..parsing_state.line_state.space_from_last_structure {
+            for _ in 0..line_state.space_from_last_structure {
                 string_out.push(' ');
             }
             for c in line_state {
@@ -668,7 +633,7 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
     }
 
     // non reserved (type 7) cant interrupt paragraph
-    if parsing_state.open_par_above {
+    if open_par_exists {
         return None;
     }
 
@@ -684,7 +649,7 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
     tag_finder.consume_while(|c| " \t".contains(c));
     if tag_finder.is_empty() {
         let mut string_out = String::new();
-        for _ in 0..parsing_state.line_state.space_from_last_structure {
+        for _ in 0..line_state.space_from_last_structure {
             string_out.push(' ');
         }
         for c in &mut *line_state {
@@ -697,7 +662,7 @@ fn html_start_encountered(parsing_state: &mut ParsingState) -> Option<Block> {
 }
 
 fn close_paragraph(parsing_state: &mut ParsingState) {
-    if !parsing_state.open_par_exists {
+    if !parsing_state.continuable_par_exists {
         parsing_state.open_par_above = false;
         return;
     } //no paragraph to close, job done.
@@ -789,7 +754,7 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
     *b = false;
 
     parsing_state.open_par_above = false;
-    parsing_state.open_par_exists = false;
+    parsing_state.continuable_par_exists = false;
 }
 
 // #[cfg(test)]
@@ -1402,7 +1367,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
         for c in parsing_state.line_state.clone() {
             inline.string.push(c);
         }
-        parsing_state.open_par_exists = true;
+        parsing_state.continuable_par_exists = true;
         parsing_state.open_par_above = true;
         return;
     }
@@ -1447,7 +1412,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
                 Inline::new(parsing_state.line_state.clone().collect()),
                 true,
             ));
-            parsing_state.open_par_exists = true;
+            parsing_state.continuable_par_exists = true;
             parsing_state.open_par_above = true;
         }
         _ => unreachable!(),
