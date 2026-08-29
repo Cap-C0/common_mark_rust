@@ -1,6 +1,6 @@
 use phf::phf_map;
 
-use crate::peekable_char_indices::PeekableCharIndices;
+use crate::peekable_char_indices::*;
 
 pub trait UnicodeCategory {
     fn is_unicode_punctuation(&self) -> bool;
@@ -146,7 +146,7 @@ pub fn push_chars_with_entities_and_bs(str_in: &str, string_builder: &mut String
     } else {
         Box::new(push_html_reserved_char)
     };
-    let mut peekable_char_indices = PeekableCharIndices::new(str_in.char_indices());
+    let mut peekable_char_indices = BorrowedStringPCI::new(str_in);
     while let Some(c) = peekable_char_indices.next() {
         match c {
             '%' => {

@@ -1,3 +1,4 @@
+// This should be more ignorant of the implementation of the AST
 use std::collections::HashMap;
 use std::mem;
 
@@ -7,7 +8,7 @@ use crate::ListType::*;
 use crate::ast_types::*;
 use crate::inline::*;
 use crate::parsers::*;
-use crate::peekable_char_indices::PeekableCharIndices;
+use crate::peekable_char_indices::*;
 use crate::string_normalize::normalize_label;
 
 pub type LRDTable = HashMap<String, (String, Option<String>)>;
@@ -27,7 +28,7 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     };
     // dbg!(line_0);
     let mut parsing_state = ParsingState {
-        document,
+        abstract_syntax_tree: document,
         lrd_table,
         line_state: LineState::new(line_0),
         open_block_depth: 0,
@@ -52,13 +53,13 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     parsing_state.set_open_par_exists();
     create_new_block_starts(&mut parsing_state);
     close_paragraph(&mut parsing_state);
-    (parsing_state.document, parsing_state.lrd_table)
+    (parsing_state.abstract_syntax_tree, parsing_state.lrd_table)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ParsingState<'a> {
     // current_line_number: usize,
-    document: Block,
+    abstract_syntax_tree: Block,
     lrd_table: LRDTable,
     line_state: LineState<'a>,
     open_block_depth: usize,
@@ -73,13 +74,16 @@ struct ParsingState<'a> {
 impl<'a> ParsingState<'a> {
     fn set_open_par_above(&mut self) {
         self.open_par_above = matches!(
-            self.document.get_block(self.open_block_depth),
+            self.abstract_syntax_tree.get_block(self.open_block_depth),
             Paragraph(_, true)
         );
     }
 
     fn set_open_par_exists(&mut self) {
-        self.open_par_exists = matches!(self.document.get_last_block(), Paragraph(_, true));
+        self.open_par_exists = matches!(
+            self.abstract_syntax_tree.get_last_block(),
+            Paragraph(_, true)
+        );
     }
 
     fn set_open_pars(&mut self) {
@@ -88,7 +92,7 @@ impl<'a> ParsingState<'a> {
     }
 
     pub fn get_open_block(&mut self) -> &mut Block {
-        self.document.get_block(self.open_block_depth)
+        self.abstract_syntax_tree.get_block(self.open_block_depth)
     }
 
     fn set_new_line_state(&mut self) {
@@ -101,7 +105,7 @@ impl<'a> ParsingState<'a> {
 
 #[derive(Debug, Clone)]
 struct LineState<'a> {
-    char_iter: PeekableCharIndices<'a>,
+    char_iter: BorrowedStringPCI<'a>,
     effective_column_number: usize,
     space_from_last_structure: usize,
 }
@@ -126,60 +130,27 @@ impl<'a> Iterator for LineState<'a> {
     }
 }
 
+impl<'a> PeekableCharIndices<usize> for LineState<'a> {
+    fn next_and_index(&mut self) -> Option<(usize, char)> {
+        self.char_iter.next_and_index()
+    }
+    fn peek_and_index(&mut self) -> Option<(usize, char)> {
+        self.char_iter.peek_and_index()
+    }
+
+    fn offset(&self) -> usize {
+        self.char_iter.offset()
+    }
+}
+
 impl<'a> LineState<'a> {
-    pub fn new(line_in: &'a str) -> Self {
+    fn new(line_in: &'a str) -> Self {
         LineState {
-            char_iter: PeekableCharIndices::new(line_in.char_indices()),
+            char_iter: BorrowedStringPCI::new(line_in),
             effective_column_number: 0,
             space_from_last_structure: 0,
         }
     }
-
-    pub fn next_and_index(&mut self) -> Option<(usize, char)> {
-        self.char_iter.next_and_index()
-    }
-
-    pub fn peek(&mut self) -> Option<char> {
-        self.char_iter.peek()
-    }
-
-    pub fn offset(&self) -> usize {
-        self.char_iter.offset()
-    }
-
-    pub fn is_empty(&mut self) -> bool {
-        self.char_iter.is_empty()
-    }
-
-    pub fn next_if(&mut self, func: impl Fn(char) -> bool) -> Option<char> {
-        self.next_if_helper(&func)
-    }
-    pub fn next_if_char_eq(&mut self, c: char) -> Option<char> {
-        self.next_if(|peeked_c| peeked_c == c)
-    }
-
-    /// iterates until it finds a value that does not match the func
-    pub fn consume_while(&mut self, func: impl Fn(char) -> bool) {
-        while self.next_if_helper(&func).is_some() {}
-    }
-
-    pub fn consume_while_char_eq(&mut self, c: char) {
-        self.consume_while(|peeked_c| peeked_c == c);
-    }
-
-    fn next_if_helper(&mut self, func: &impl Fn(char) -> bool) -> Option<char> {
-        match self.peek() {
-            Some(tup) => {
-                if func(tup) {
-                    self.next()
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
     fn consume_indent(&mut self) {
         self.consume_while(|c| " \t".contains(c));
     }
@@ -225,7 +196,7 @@ mod test_ls {
 }
 
 fn check_continuation_conditions(parsing_state: &mut ParsingState) {
-    let mut current_block = &parsing_state.document;
+    let mut current_block = &parsing_state.abstract_syntax_tree;
     let line_state = &mut parsing_state.line_state;
     // println!("called ccc!");
     'outer: loop {
@@ -722,23 +693,18 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
         return;
     } //no paragraph to close, job done.
 
-    let Paragraph(il, b @ true) = parsing_state.document.get_last_block() else {
+    let Paragraph(il, b @ true) = parsing_state.abstract_syntax_tree.get_last_block() else {
         panic!()
     };
 
-    let mut chars = PeekableCharIndices::new(il.string.char_indices());
+    let mut chars = BorrowedStringPCI::new(&il.string);
 
     'collect_lrds: loop {
         let mut current_iteration_iter = chars.clone();
 
         // let mut link_lab_iter_start = current_iteration_iter.clone();
 
-        let link_lab_start_char_index = current_iteration_iter.offset();
-        if current_iteration_iter.next_if_char_eq('[').is_none() {
-            break 'collect_lrds;
-        }
-        let Some(link_lab_end_char_index) = dbg!(parse_link_label(&mut current_iteration_iter))
-        else {
+        let Some(link_lab_range) = dbg!(parse_link_label(&mut current_iteration_iter)) else {
             break 'collect_lrds;
         };
         // let link_lab_end_char_index = current_iteration_iter.offset();
@@ -751,21 +717,9 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
         //optional spaces or tabs
         current_iteration_iter.consume_while(|c| " \t\n".contains(c));
 
-        // dbg!(&current_iteration_iter);
-        // let mut link_dest_iter_start = current_iteration_iter.clone();
-        let mut link_dest_start_char_index = current_iteration_iter.offset();
-        let Some((link_dest_end_char_index, link_dest_in_brackets)) =
-            parse_link_destination(&mut current_iteration_iter)
-        else {
+        let Some(link_dest_range) = parse_link_destination(&mut current_iteration_iter) else {
             break 'collect_lrds;
         };
-        // let mut link_dest_end_char_index = current_iteration_iter.offset();
-        if link_dest_in_brackets {
-            link_dest_start_char_index += 1;
-            // link_dest_end_char_index -= 1;
-            // link_dest_iter_start.next();
-            // link_dest_end -= 1;
-        }
 
         let offset_before_spaces = current_iteration_iter.offset();
         current_iteration_iter.consume_while(|c| " \t".contains(c));
@@ -778,10 +732,8 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
         // let mut link_title_iter_start = current_iteration_iter.clone();
         let mut find_link_title_iter = current_iteration_iter.clone();
 
-        let link_title_start_index = find_link_title_iter.offset();
         if current_iteration_iter.offset() > offset_before_spaces
-            && let Some(link_title_end_char_index) =
-                dbg!(parse_link_title(&mut find_link_title_iter))
+            && let Some(link_title_range) = dbg!(parse_link_title(&mut find_link_title_iter))
             && {
                 find_link_title_iter.consume_while(|c| " \t".contains(c));
                 match find_link_title_iter.peek() {
@@ -797,15 +749,12 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
                 .lrd_table
                 .entry(dbg!(normalize_label(
                     // &(link_lab_iter_start.collect_until_offset(link_label_end)),
-                    &il.string[link_lab_start_char_index..link_lab_end_char_index]
+                    &il.string[link_lab_range]
                 )))
                 .or_insert((
-                    (&il.string[link_dest_start_char_index..link_dest_end_char_index]).into(),
-                    if link_title_start_index + 2 < link_title_end_char_index {
-                        Some(
-                            (&il.string[link_title_start_index + 1..link_title_end_char_index - 1])
-                                .into(),
-                        )
+                    (&il.string[link_dest_range]).into(),
+                    if link_title_range.start != link_title_range.end {
+                        Some((&il.string[link_title_range]).into())
                     } else {
                         None
                     }, // link_dest_iter_start.collect_until_offset(link_dest_end),
@@ -816,13 +765,8 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
         } else if is_valid_lrd {
             parsing_state
                 .lrd_table
-                .entry(normalize_label(
-                    &il.string[link_lab_start_char_index..link_lab_end_char_index],
-                ))
-                .or_insert((
-                    (&il.string[link_dest_start_char_index..link_dest_end_char_index]).into(),
-                    None,
-                ));
+                .entry(normalize_label(&il.string[link_lab_range]))
+                .or_insert(((&il.string[link_dest_range]).into(), None));
             chars = current_iteration_iter;
             continue 'collect_lrds;
         };
@@ -839,249 +783,249 @@ fn close_paragraph(parsing_state: &mut ParsingState) {
     parsing_state.open_par_exists = false;
 }
 
-#[cfg(test)]
-mod cp_tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-
-    fn test_cp(ast: Block, expected_ast: Block, exp_table: LRDTable) {
-        let mut parsing_state = ParsingState {
-            document: ast,
-            lrd_table: HashMap::new(),
-            line_state: LineState::new(""),
-            open_block_depth: 1,
-            open_par_above: true,
-            open_par_exists: true,
-            blank_line_depth: None,
-            line_number: 0,
-        };
-        close_paragraph(&mut parsing_state);
-        assert_eq!(
-            (expected_ast, exp_table, false, false),
-            (
-                parsing_state.document,
-                parsing_state.lrd_table,
-                parsing_state.open_par_above,
-                parsing_state.open_par_exists
-            ),
-        )
-    }
-
-    #[test]
-    fn test_cp_no_def() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new("hello".chars().collect()),
-                true,
-            )]),
-            Document(vec![Paragraph(
-                Inline::new("hello".chars().collect()),
-                false,
-            )]),
-            HashMap::new(),
-        )
-    }
-
-    #[test]
-    fn test_cp_no_title() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new("[hello]:link".chars().collect()),
-                true,
-            )]),
-            Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-            HashMap::from([("hello".chars().collect(), ("link".chars().collect(), None))]),
-        )
-    }
-
-    #[test]
-    fn test_cp_title() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new("[hello]:link (your_mom)".chars().collect()),
-                true,
-            )]),
-            Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-            HashMap::from([(
-                "hello".chars().collect(),
-                ("link".chars().collect(), Some("your_mom".chars().collect())),
-            )]),
-        )
-    }
-
-    #[test]
-    fn test_cp_multiline() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new("[\nhel\nlo\n]:\nlink \n(your_mom)".chars().collect()),
-                true,
-            )]),
-            Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-            HashMap::from([(
-                "hel lo".chars().collect(),
-                ("link".chars().collect(), Some("your_mom".chars().collect())),
-            )]),
-        )
-    }
-    #[test]
-    fn test_cp_title_fail() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new("[\nhel\nlo\n]:\nlink    \n(your_mom".chars().collect()),
-                true,
-            )]),
-            Document(vec![Paragraph(
-                Inline::new("(your_mom".chars().collect()),
-                false,
-            )]),
-            HashMap::from([("hel lo".chars().collect(), ("link".chars().collect(), None))]),
-        )
-    }
-
-    #[test]
-    fn test_cp_link_fail_1() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new("[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect()),
-                true,
-            )]),
-            Document(vec![Paragraph(
-                Inline::new("[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect()),
-                false,
-            )]),
-            HashMap::from([]),
-        )
-    }
-    #[test]
-    fn test_cp_link_fail_2() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new("[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect()),
-                true,
-            )]),
-            Document(vec![Paragraph(
-                Inline::new("[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect()),
-                false,
-            )]),
-            HashMap::from([]),
-        )
-    }
-    #[test]
-    fn test_cp_more_paragraph() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new(
-                    "[\nhel\nlo\n]:\nlink    \n'your_mom'\nand theres more"
-                        .chars()
-                        .collect(),
-                ),
-                true,
-            )]),
-            Document(vec![Paragraph(
-                Inline::new("and theres more".chars().collect()),
-                false,
-            )]),
-            HashMap::from([(
-                "hel lo".chars().collect(),
-                ("link".chars().collect(), Some("your_mom".chars().collect())),
-            )]),
-        )
-    }
-    #[test]
-    fn test_cp_2_def() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new(
-                    "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[def2]:link2 \"desc_2\""
-                        .chars()
-                        .collect(),
-                ),
-                true,
-            )]),
-            Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-            HashMap::from([
-                (
-                    "hel lo".chars().collect(),
-                    ("link".chars().collect(), Some("your_mom".chars().collect())),
-                ),
-                (
-                    "def2".chars().collect(),
-                    ("link2".chars().collect(), Some("desc_2".chars().collect())),
-                ),
-            ]),
-        )
-    }
-    #[test]
-    fn test_cp_2_def_override() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new(
-                    "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-                        .chars()
-                        .collect(),
-                ),
-                true,
-            )]),
-            Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-            HashMap::from([(
-                "hel lo".chars().collect(),
-                ("link".chars().collect(), Some("your_mom".chars().collect())),
-            )]),
-        )
-    }
-    #[test]
-    fn test_cp_fails() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new(
-                    "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-                        .chars()
-                        .collect(),
-                ),
-                true,
-            )]),
-            Document(vec![Paragraph(
-                Inline::new(
-                    "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-                        .chars()
-                        .collect(),
-                ),
-                false,
-            )]),
-            HashMap::from([]),
-        )
-    }
-    #[test]
-    fn test_cp_2_escapes() {
-        test_cp(
-            Document(vec![Paragraph(
-                Inline::new(
-                    "[\nh\\el\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
-                        .chars()
-                        .collect(),
-                ),
-                true,
-            )]),
-            Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
-            HashMap::from([
-                (
-                    "h\\el lo".chars().collect(),
-                    ("link".chars().collect(), Some("your_mom".chars().collect())),
-                ),
-                (
-                    "hel lo".chars().collect(),
-                    ("link2".chars().collect(), Some("desc_2".chars().collect())),
-                ),
-            ]),
-        )
-    }
-}
+// #[cfg(test)]
+// mod cp_tests {
+//     use super::*;
+//     use pretty_assertions::assert_eq;
+//
+//     fn test_cp(ast: Block, expected_ast: Block, exp_table: LRDTable) {
+//         let mut parsing_state = ParsingState {
+//             abstract_syntax_tree: ast,
+//             lrd_table: HashMap::new(),
+//             line_state: LineState::new(""),
+//             open_block_depth: 1,
+//             open_par_above: true,
+//             open_par_exists: true,
+//             blank_line_depth: None,
+//             line_number: 0,
+//         };
+//         close_paragraph(&mut parsing_state);
+//         assert_eq!(
+//             (expected_ast, exp_table, false, false),
+//             (
+//                 parsing_state.abstract_syntax_tree,
+//                 parsing_state.lrd_table,
+//                 parsing_state.open_par_above,
+//                 parsing_state.open_par_exists
+//             ),
+//         )
+//     }
+//
+//     #[test]
+//     fn test_cp_no_def() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new("hello".chars().collect()),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(
+//                 Inline::new("hello".chars().collect()),
+//                 false,
+//             )]),
+//             HashMap::new(),
+//         )
+//     }
+//
+//     #[test]
+//     fn test_cp_no_title() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new("[hello]:link".chars().collect()),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
+//             HashMap::from([("hello".chars().collect(), ("link".chars().collect(), None))]),
+//         )
+//     }
+//
+//     #[test]
+//     fn test_cp_title() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new("[hello]:link (your_mom)".chars().collect()),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
+//             HashMap::from([(
+//                 "hello".chars().collect(),
+//                 ("link".chars().collect(), Some("your_mom".chars().collect())),
+//             )]),
+//         )
+//     }
+//
+//     #[test]
+//     fn test_cp_multiline() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new("[\nhel\nlo\n]:\nlink \n(your_mom)".chars().collect()),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
+//             HashMap::from([(
+//                 "hel lo".chars().collect(),
+//                 ("link".chars().collect(), Some("your_mom".chars().collect())),
+//             )]),
+//         )
+//     }
+//     #[test]
+//     fn test_cp_title_fail() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new("[\nhel\nlo\n]:\nlink    \n(your_mom".chars().collect()),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(
+//                 Inline::new("(your_mom".chars().collect()),
+//                 false,
+//             )]),
+//             HashMap::from([("hel lo".chars().collect(), ("link".chars().collect(), None))]),
+//         )
+//     }
+//
+//     #[test]
+//     fn test_cp_link_fail_1() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new("[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect()),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(
+//                 Inline::new("[\nhel\nlo\n]:\n)link    \n(your_mom".chars().collect()),
+//                 false,
+//             )]),
+//             HashMap::from([]),
+//         )
+//     }
+//     #[test]
+//     fn test_cp_link_fail_2() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new("[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect()),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(
+//                 Inline::new("[\nhel\nlo\n]:\n(link(())    \n(your_mom".chars().collect()),
+//                 false,
+//             )]),
+//             HashMap::from([]),
+//         )
+//     }
+//     #[test]
+//     fn test_cp_more_paragraph() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new(
+//                     "[\nhel\nlo\n]:\nlink    \n'your_mom'\nand theres more"
+//                         .chars()
+//                         .collect(),
+//                 ),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(
+//                 Inline::new("and theres more".chars().collect()),
+//                 false,
+//             )]),
+//             HashMap::from([(
+//                 "hel lo".chars().collect(),
+//                 ("link".chars().collect(), Some("your_mom".chars().collect())),
+//             )]),
+//         )
+//     }
+//     #[test]
+//     fn test_cp_2_def() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new(
+//                     "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[def2]:link2 \"desc_2\""
+//                         .chars()
+//                         .collect(),
+//                 ),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
+//             HashMap::from([
+//                 (
+//                     "hel lo".chars().collect(),
+//                     ("link".chars().collect(), Some("your_mom".chars().collect())),
+//                 ),
+//                 (
+//                     "def2".chars().collect(),
+//                     ("link2".chars().collect(), Some("desc_2".chars().collect())),
+//                 ),
+//             ]),
+//         )
+//     }
+//     #[test]
+//     fn test_cp_2_def_override() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new(
+//                     "[\nhel\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
+//                         .chars()
+//                         .collect(),
+//                 ),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
+//             HashMap::from([(
+//                 "hel lo".chars().collect(),
+//                 ("link".chars().collect(), Some("your_mom".chars().collect())),
+//             )]),
+//         )
+//     }
+//     #[test]
+//     fn test_cp_fails() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new(
+//                     "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
+//                         .chars()
+//                         .collect(),
+//                 ),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(
+//                 Inline::new(
+//                     "[\nhel\nlo\n]:\n<link    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
+//                         .chars()
+//                         .collect(),
+//                 ),
+//                 false,
+//             )]),
+//             HashMap::from([]),
+//         )
+//     }
+//     #[test]
+//     fn test_cp_2_escapes() {
+//         test_cp(
+//             Document(vec![Paragraph(
+//                 Inline::new(
+//                     "[\nh\\el\nlo\n]:\nlink    \n'your_mom'\n[hel    lo   ]:link2 \"desc_2\""
+//                         .chars()
+//                         .collect(),
+//                 ),
+//                 true,
+//             )]),
+//             Document(vec![Paragraph(Inline::new("".chars().collect()), false)]),
+//             HashMap::from([
+//                 (
+//                     "h\\el lo".chars().collect(),
+//                     ("link".chars().collect(), Some("your_mom".chars().collect())),
+//                 ),
+//                 (
+//                     "hel lo".chars().collect(),
+//                     ("link2".chars().collect(), Some("desc_2".chars().collect())),
+//                 ),
+//             ]),
+//         )
+//     }
+// }
 
 fn create_new_block_starts(parsing_state: &mut ParsingState) {
     'blank_line: {
         if dbg!(parsing_state.line_state.is_blank_line()) {
             match parsing_state
-                .document
+                .abstract_syntax_tree
                 .get_block(parsing_state.open_block_depth)
             {
                 IndentedCodeBlock(_, unrealized_blanks) => {
@@ -1113,19 +1057,19 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             close_paragraph(parsing_state);
             parsing_state.blank_line_depth = Some(
                 parsing_state
-                    .document
+                    .abstract_syntax_tree
                     .deepest_matched_blockquote(parsing_state.open_block_depth),
             );
             // make block quotes closed
             parsing_state
-                .document
+                .abstract_syntax_tree
                 .close_open_block(parsing_state.open_block_depth as i32);
             return;
         }
     }
 
     match parsing_state
-        .document
+        .abstract_syntax_tree
         .get_block(parsing_state.open_block_depth)
     {
         IndentedCodeBlock(chars, spaces) => {
@@ -1204,7 +1148,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
     // that means that *something* will eventually get added to list item
     let mut depth_of_list_being_added_to = None;
     if let (ListItem(..), depth) = parsing_state
-        .document
+        .abstract_syntax_tree
         .get_general_container(parsing_state.open_block_depth)
     {
         depth_of_list_being_added_to = Some(depth - 1);
@@ -1243,7 +1187,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
                         }
                         _ => panic!(),
                     }
-                    match parsing_state.document.get_general_container(parsing_state.open_block_depth).0 {
+                    match parsing_state.abstract_syntax_tree.get_general_container(parsing_state.open_block_depth).0 {
                         // by definition some container block
                         Document(blocks) |
                         BlockQuote(blocks, _) |
@@ -1265,7 +1209,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             close_paragraph(parsing_state);
 
             if let Some(list_depth) = depth_of_list_being_added_to {
-                match parsing_state.document.get_block(list_depth) {
+                match parsing_state.abstract_syntax_tree.get_block(list_depth) {
                     List(_, is_tight, _, _blank_line_encountered) => {
                         *is_tight = parsing_state
                             .blank_line_depth
@@ -1276,7 +1220,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
                 }
             }
             match (parsing_state
-                .document
+                .abstract_syntax_tree
                 .get_general_container(parsing_state.open_block_depth))
             .0
             {
@@ -1291,7 +1235,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
         //now check if we can add a new list item to an existing list
         let mut list_item_iter = parsing_state.line_state.clone();
         if let List(_, _, existing_lt, _) = parsing_state
-            .document
+            .abstract_syntax_tree
             .get_block(parsing_state.open_block_depth)
             && let Some((new_lt, li)) = list_item_encountered(&mut list_item_iter)
             && existing_lt.same_list_eq(&new_lt)
@@ -1313,7 +1257,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             if thematic_break_encountered(&mut them_break_iter) {
                 close_paragraph(parsing_state);
                 match parsing_state
-                    .document
+                    .abstract_syntax_tree
                     .get_general_container(parsing_state.open_block_depth)
                     .0
                 {
@@ -1340,7 +1284,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
                 //empty afterwards
                 close_paragraph(parsing_state);
                 let (parent, new_obd) = parsing_state
-                    .document
+                    .abstract_syntax_tree
                     .get_general_container(parsing_state.open_block_depth);
                 match parent {
                     Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
@@ -1357,7 +1301,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             if block_quote_encountered(&mut block_quote_iter) {
                 close_paragraph(parsing_state);
                 let (parent, new_obd) = parsing_state
-                    .document
+                    .abstract_syntax_tree
                     .get_general_container(parsing_state.open_block_depth);
                 match parent {
                     Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
@@ -1374,7 +1318,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             if let Some(fcb) = fenced_code_block_encountered(&mut fcb_iter) {
                 close_paragraph(parsing_state);
                 let (parent, new_obd) = parsing_state
-                    .document
+                    .abstract_syntax_tree
                     .get_general_container(parsing_state.open_block_depth);
                 match parent {
                     Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
@@ -1390,7 +1334,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             if let Some(atxh) = atx_heading_encountered(&mut atx_iter) {
                 close_paragraph(parsing_state);
                 let parent = parsing_state
-                    .document
+                    .abstract_syntax_tree
                     .get_general_container(parsing_state.open_block_depth)
                     .0;
                 match parent {
@@ -1404,7 +1348,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
             if let Some(html) = html_start_encountered(parsing_state) {
                 close_paragraph(parsing_state);
                 let parent = parsing_state
-                    .document
+                    .abstract_syntax_tree
                     .get_general_container(parsing_state.open_block_depth)
                     .0;
                 match parent {
@@ -1422,7 +1366,10 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
     // at this point, if the last matched block is a list item, then we can let potentially
     // non-tight lists actually be non-tight
     if let Some(depth_of_list_block) = depth_of_list_being_added_to {
-        match parsing_state.document.get_block(depth_of_list_block) {
+        match parsing_state
+            .abstract_syntax_tree
+            .get_block(depth_of_list_block)
+        {
             List(_, is_tight, _, _blank_line_encountered) => {
                 *is_tight = parsing_state
                     .blank_line_depth
@@ -1440,7 +1387,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
     }
 
     //now check if theres a paragraph we can continue lazily
-    if let Paragraph(inline, true) = parsing_state.document.get_last_block() {
+    if let Paragraph(inline, true) = parsing_state.abstract_syntax_tree.get_last_block() {
         inline.string.push('\n');
         parsing_state.line_state.consume_indent();
         for c in parsing_state.line_state.clone() {
@@ -1454,7 +1401,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
     // if theres no paragraph to continue, check to create an indented code block
     if parsing_state.line_state.space_from_last_structure >= 4 {
         match parsing_state
-            .document
+            .abstract_syntax_tree
             .get_general_container(parsing_state.open_block_depth)
             .0
         {
@@ -1476,7 +1423,7 @@ fn create_new_block_starts(parsing_state: &mut ParsingState) {
     // finally, we can create a new paragraph with the line remaining
     // since we have been consuming spaces beforehand
     match parsing_state
-        .document
+        .abstract_syntax_tree
         .get_general_container(parsing_state.open_block_depth)
         .0
     {

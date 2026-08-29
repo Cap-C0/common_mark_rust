@@ -1,10 +1,105 @@
 use crate::{
-    ast_types::{Block::*, ListType::*},
+    ast_types::{
+        Block::*,
+        // BlockKind::{Container, Leaf},
+        ListType::*,
+    },
     block_structure::LRDTable,
     chars::{push_chars_with_entities_and_bs, push_html_reserved_char},
     inline::Inline,
 };
 
+// #[derive(Debug, Copy, PartialEq, Eq, Clone)]
+// pub struct NodeId(usize);
+//
+// #[derive(Debug, PartialEq, Eq)]
+// pub struct AbstractSyntaxTree<T> {
+//     nodes: Vec<Node<T>>,
+//     head: NodeId,
+// }
+//
+// #[derive(Debug, PartialEq, Eq)]
+// pub enum BlockKind {
+//     Leaf,
+//     Container(Vec<NodeId>),
+// }
+//
+// #[derive(Debug, PartialEq, Eq)]
+// struct Node<T> {
+//     block: Block<T>,
+//     block_kind: BlockKind,
+//     parent: Option<NodeId>,
+// }
+//
+// #[derive(Debug, PartialEq, Eq, Clone)]
+// pub enum Block<T> {
+//     Document,
+//     BlockQuote(bool),
+//     /// (children, tight, lt, blank_line_encountered)
+//     List(bool, ListType, bool),
+//     /// (children, continuable, indent requirement)
+//     ListItem(bool, usize),
+//     Heading(T, usize),
+//     Paragraph(T, bool),
+//     ThematicBreak,
+//     /// actualy chars, unrealized blanks
+//     IndentedCodeBlock(T, T), // unrealized blank lines
+//     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
+//     FencedCodeBlock(T, bool, char, T, usize, usize),
+//     /// (characters,is_open, end_condition, )
+//     HTMLBlock(String, bool, HTMLEndCondition),
+// }
+
+// impl<T> AbstractSyntaxTree<T> {
+//     pub fn new() -> Self {
+//         AbstractSyntaxTree {
+//             nodes: vec![Node {
+//                 block: Document,
+//                 block_kind: Container(vec![]),
+//                 parent: None,
+//             }],
+//             head: NodeId(0),
+//         }
+//     }
+//
+//     pub fn add_new_node(&mut self, parent: NodeId, block: Block<T>) -> NodeId {
+//         let block_kind = match block {
+//             BlockQuote(..) | List(..) | ListItem(..) => Container(vec![]),
+//             Document => unreachable!(),
+//             _ => Leaf,
+//         };
+//         let child_id = NodeId(self.nodes.len());
+//         self.nodes.push(Node {
+//             block,
+//             block_kind,
+//             parent: Some(parent),
+//         });
+//         let Container(ref mut children) = self.nodes[parent.0].block_kind else {
+//             panic!("The parent of a block *must* be a container")
+//         };
+//         children.push(child_id);
+//         child_id
+//     }
+//
+//     pub fn get_last_child_id(&self, parent: NodeId) -> Option<NodeId> {
+//         match self.nodes[parent.0].block_kind {
+//             Leaf => None,
+//             Container(ref child_ids) => child_ids.last().copied(),
+//         }
+//     }
+//
+//     pub fn get_block(&mut self, node_id: NodeId) -> &mut Block<T> {
+//         &mut self.nodes[node_id.0].block
+//     }
+//
+//     pub fn get_head_id(&self) -> NodeId {
+//         self.head
+//     }
+// }
+
+//TODO: put blocks in ref counts, which should allow instant access to them when constructing_new blocks,
+//instead of having to "climb" down to get them.
+//TODO: put this in an Arena!
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Block {
     Document(Vec<Block>),

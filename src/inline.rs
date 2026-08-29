@@ -40,37 +40,56 @@ impl Inline {
 
 // we do not need to enforce multiple new line requirements in these parsers as that will be enforced
 // by paragraphs ending at new lines
-
-//TODO: stop holding char_offsets,
-//thats literally what &str is for
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum InlineContent<'a> {
+pub enum InlineContent<T> {
     Softbreak,
     Hardbreak,
-    Text(&'a str),
-    Emph(Vec<InlineContent<'a>>),
-    Strong(Vec<InlineContent<'a>>),
+    Text(T),
+    Emph(Vec<InlineContent<T>>),
+    Strong(Vec<InlineContent<T>>),
     /// is_image, href, title, link_text
     //TODO: make this work with reference links
-    InlineLink(
-        bool,
-        Option<&'a str>,
-        Option<&'a str>,
-        Vec<InlineContent<'a>>,
-    ),
-    ReferenceLink(bool, String, Vec<InlineContent<'a>>),
+    InlineLink(bool, Option<T>, Option<T>, Vec<InlineContent<T>>),
+    ReferenceLink(bool, String, Vec<InlineContent<T>>),
     /// src, title, link_text
     // Image((usize, usize), (usize, usize), Vec<InlineContent>),
     /// href and text, is_email
-    AutoLink(&'a str, bool),
+    AutoLink(T, bool),
     /// start, end char index (exclusive)
-    HTMLTag(&'a str),
-    Code(&'a str),
+    HTMLTag(T),
+    Code(T),
     // for use when swapping memory
     Dummy,
 }
 
-impl<'a> InlineContent<'a> {
+// #[derive(Debug, PartialEq, Eq, Clone)]
+// pub enum InlineContent<'a> {
+//     Softbreak,
+//     Hardbreak,
+//     Text(&'a str),
+//     Emph(Vec<InlineContent<'a>>),
+//     Strong(Vec<InlineContent<'a>>),
+//     /// is_image, href, title, link_text
+//     //TODO: make this work with reference links
+//     InlineLink(
+//         bool,
+//         Option<&'a str>,
+//         Option<&'a str>,
+//         Vec<InlineContent<'a>>,
+//     ),
+//     ReferenceLink(bool, String, Vec<InlineContent<'a>>),
+//     /// src, title, link_text
+//     // Image((usize, usize), (usize, usize), Vec<InlineContent>),
+//     /// href and text, is_email
+//     AutoLink(&'a str, bool),
+//     /// start, end char index (exclusive)
+//     HTMLTag(&'a str),
+//     Code(&'a str),
+//     // for use when swapping memory
+//     Dummy,
+// }
+
+impl<'a> InlineContent<&'a str> {
     pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
         match self {
             Softbreak => string_builder.push('\n'),
@@ -245,7 +264,7 @@ impl<'a> InlineContent<'a> {
 }
 
 #[derive(Debug, Clone)]
-enum InlineTextComponent<'a> {
+enum InlineTextComponent<T> {
     /// Total_count,Count_consumed, potential_opener, potential_closer
     Asts(usize, usize, bool, bool),
     /// Total_count,Count_consumed, potential_opener, potential_closer
@@ -257,10 +276,10 @@ enum InlineTextComponent<'a> {
     /// Total_count
     /// Offset to last char (exclusive)
     TextualContent(usize),
-    CompletedContent(InlineContent<'a>),
+    CompletedContent(InlineContent<T>),
 }
 
-impl<'a> InlineTextComponent<'a> {
+impl<T> InlineTextComponent<T> {
     fn convert_to_completed_content(&mut self) {
         if matches!(self, TextualContent(..) | CompletedContent(..)) {
             return;
@@ -289,11 +308,13 @@ impl<'a> InlineTextComponent<'a> {
     //     }
     // }
     //TODO: make these "to_" functions take ownership
+}
+impl<'a> InlineTextComponent<&'a str> {
     fn convert_to_inline_content(
         &mut self,
         char_offset: usize,
         base_string: &'a str,
-    ) -> InlineContent<'a> {
+    ) -> InlineContent<&'a str> {
         match self {
             Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
                 Text(&base_string[char_offset..char_offset + (*total - *consumed)])
@@ -311,21 +332,21 @@ impl<'a> InlineTextComponent<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct DLLnode<'a> {
+struct DLLnode<T> {
     //this indexes into the string at the start of a char, the design of the program should
     //guarantee that this doesnt panic. Namely by only considering usizes that come
     //immediately from a char_indices() and only subtracting from that offset when the character before that is known.
     beginning_char_index: usize,
-    inline_component: InlineTextComponent<'a>,
+    inline_component: InlineTextComponent<T>,
     index_of_prev: Option<usize>,
     index_of_next: Option<usize>,
     index_of_this: usize, // this is helpful for getting around borrow checker shenanigans
 }
 
-impl<'a> DLLnode<'a> {
+impl<T> DLLnode<T> {
     fn new(
         beginning_char_index: usize,
-        inline_component: InlineTextComponent<'a>,
+        inline_component: InlineTextComponent<T>,
         index_of_prev: Option<usize>,
         index_of_next: Option<usize>,
         index_of_this: usize,
@@ -344,17 +365,17 @@ impl<'a> DLLnode<'a> {
 // track of the index of the next item.
 // TODO: make this in to a more proper arena using ops and stuff
 #[derive(Debug, Clone)]
-struct FakeDelimiterDLL<'a> {
+struct FakeDelimiterDLL<T> {
     // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
-    dl_stack: Vec<DLLnode<'a>>,
+    dl_stack: Vec<DLLnode<T>>,
     // Since we only push to the dll at the beginning, we do not need to keep track of
     // "freeing" things for later. (monotonic?)
     initial_index: Option<usize>,
     final_index: Option<usize>,
 }
 
-impl<'a> FakeDelimiterDLL<'a> {
-    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent<'a>) {
+impl<T> FakeDelimiterDLL<T> {
+    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent<T>) {
         if self.initial_index.is_none() {
             self.initial_index = Some(self.dl_stack.len());
             self.final_index = Some(self.dl_stack.len());
@@ -390,19 +411,19 @@ impl<'a> FakeDelimiterDLL<'a> {
     //     self.final_index.map(|i| &self.dl_stack[i])
     // }
 
-    fn get_last_mut(&mut self) -> Option<&mut DLLnode<'a>> {
+    fn get_last_mut(&mut self) -> Option<&mut DLLnode<T>> {
         self.final_index.map(|i| &mut self.dl_stack[i])
     }
 
-    fn get(&self, index: usize) -> &DLLnode<'_> {
+    fn get(&self, index: usize) -> &DLLnode<T> {
         &self.dl_stack[index]
     }
 
-    fn get_mut(&mut self, index: usize) -> &mut DLLnode<'a> {
+    fn get_mut(&mut self, index: usize) -> &mut DLLnode<T> {
         &mut self.dl_stack[index]
     }
 
-    fn get_next(&self, node: &DLLnode) -> Option<&DLLnode<'_>> {
+    fn get_next(&self, node: &DLLnode<T>) -> Option<&DLLnode<T>> {
         node.index_of_next.map(|i| &self.dl_stack[i])
     }
 
@@ -425,7 +446,7 @@ impl<'a> FakeDelimiterDLL<'a> {
         bottom_node_index: usize,
         top_node_index: usize,
         begin_char_index: usize,
-        item: InlineTextComponent<'a>,
+        item: InlineTextComponent<T>,
     ) {
         self.dl_stack.push(DLLnode {
             beginning_char_index: begin_char_index,
@@ -473,55 +494,34 @@ impl<'a> FakeDelimiterDLL<'a> {
             self.final_index = prev_op;
         }
     }
-
-    // pub fn iter(&self) -> FakeDLLIter {
-    //     FakeDLLIter {
-    //         index: self.initial_index,
-    //         collection: self,
-    //     }
-    // }
 }
-
-// struct FakeDLLIter<'a> {
-//     index: Option<usize>,
-//     collection: &'a FakeDelimiterDLL,
-// }
-//
-// impl<'a> Iterator for FakeDLLIter<'a> {
-//     type Item = &'a DLLnode;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.index.is_some() {
-//             let out = self.collection.get(self.index.unwrap());
-//             self.index = out.index_of_next;
-//             return Some(out);
-//         }
-//         None
-//     }
-// }
 
 // think about what functionality we will need as we go along stack
 
 //BackTick code spans, auto links, raw_html >
 //brackets in link text >
 //emph markers.
-pub fn parse_inline<'a>(inline_str: &'a str, lrd_table: &'a LRDTable) -> Vec<InlineContent<'a>> {
-    let mut delimit_stack: FakeDelimiterDLL<'a> = FakeDelimiterDLL {
+pub fn parse_inline<'a>(
+    inline_str: &'a str,
+    lrd_table: &'a LRDTable,
+) -> Vec<InlineContent<&'a str>> {
+    let mut delimit_stack: FakeDelimiterDLL<&'a str> = FakeDelimiterDLL {
         dl_stack: vec![],
         initial_index: None,
         final_index: None,
     };
     // let mut char_iter = chars.iter().enumerate().peekable();
-    let mut char_iter = PeekableCharIndices::new(inline_str.char_indices());
+    let mut char_iter = BorrowedStringPCI::new(inline_str);
 
-    let add_text_to_stack = |sicl: &mut FakeDelimiterDLL, text_begin: usize, text_end: usize| {
-        if text_end > text_begin {
-            sicl.push_back(
-                text_begin,
-                InlineTextComponent::TextualContent(text_end - text_begin),
-            );
-        }
-    };
+    let add_text_to_stack =
+        |sicl: &mut FakeDelimiterDLL<&'a str>, text_begin: usize, text_end: usize| {
+            if text_end > text_begin {
+                sicl.push_back(
+                    text_begin,
+                    InlineTextComponent::TextualContent(text_end - text_begin),
+                );
+            }
+        };
     let mut text_begin = 0;
     let mut space_count = 0;
     let mut preceding_char = ' '; // for purposes of emphasis delimeter types (beginning counts as
@@ -735,8 +735,8 @@ pub fn parse_inline<'a>(inline_str: &'a str, lrd_table: &'a LRDTable) -> Vec<Inl
                         bci,
                         CompletedContent(InlineLink(
                             is_image,
-                            dest_op.map(|(start, end)| &inline_str[start..end]),
-                            tit_op.map(|(start, end)| &inline_str[start..end]),
+                            dest_op.map(|range| &inline_str[range]),
+                            tit_op.map(|range| &inline_str[range]),
                             link_displayed,
                         )),
                     );
@@ -747,9 +747,9 @@ pub fn parse_inline<'a>(inline_str: &'a str, lrd_table: &'a LRDTable) -> Vec<Inl
                     dbg!(parse_reference_link(&mut try_to_reference_link_iter))
                 {
                     match rlt {
-                        Full((start, end)) => {
-                            dbg!(&(start, end));
-                            let norm_lab = normalize_label(&inline_str[start..end]);
+                        Full(range) => {
+                            // dbg!(&(start, end));
+                            let norm_lab = normalize_label(&inline_str[range]);
                             dbg!(lrd_table);
                             dbg!(&norm_lab);
                             if lrd_table.contains_key(&norm_lab) {
@@ -849,28 +849,28 @@ pub fn parse_inline<'a>(inline_str: &'a str, lrd_table: &'a LRDTable) -> Vec<Inl
                 // }
             }
             '<' => {
+                let real_range_bottom = char_index;
                 //eagerly try to make autolink or html,
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                 let mut autolink_iter = char_iter.clone();
                 let mut html_iter = char_iter.clone();
-                if let Some((final_offset, is_email)) = parse_autolink(&mut autolink_iter) {
+                if let Some((range, is_email)) = parse_autolink(&mut autolink_iter) {
                     delimit_stack.push_back(
                         char_index,
-                        CompletedContent(AutoLink(
-                            &inline_str[char_index + 1..final_offset - 1],
-                            is_email,
-                        )),
+                        CompletedContent(AutoLink(&inline_str[range], is_email)),
                     );
                     char_iter = autolink_iter;
                     text_begin = char_iter.offset();
                     preceding_char = '>'
-                } else if let Some(tag_end) = parse_html_tag(&mut html_iter) {
+                } else if let Some(tag_range) =
+                    parse_html_tag(&mut html_iter).map(|r| real_range_bottom..r.end)
+                {
                     delimit_stack.push_back(
                         char_index,
-                        CompletedContent(HTMLTag(&inline_str[char_index..tag_end])),
+                        CompletedContent(HTMLTag(&inline_str[tag_range.clone()])),
                     );
                     char_iter = html_iter;
-                    text_begin = tag_end;
+                    text_begin = tag_range.end;
                     preceding_char = '>'
                 } else {
                     add_text_to_stack(&mut delimit_stack, char_index, char_index + 1);
@@ -894,9 +894,9 @@ pub fn parse_inline<'a>(inline_str: &'a str, lrd_table: &'a LRDTable) -> Vec<Inl
 
 fn process_emphasis<'a>(
     stack_bottom: Option<usize>,
-    stack: &mut FakeDelimiterDLL<'a>,
+    stack: &mut FakeDelimiterDLL<&'a str>,
     inline_str: &'a str,
-) -> Vec<InlineContent<'a>> {
+) -> Vec<InlineContent<&'a str>> {
     // dbg!("processing emph");
     dbg!(&stack);
     dbg!(&stack_bottom);
@@ -914,6 +914,7 @@ fn process_emphasis<'a>(
     let mut unds_op_stack: Vec<(usize, usize)> = vec![];
     let mut asts_op_stack: Vec<(usize, usize)> = vec![];
 
+    //TODO: DRY THIS SOMEHOW, UNDS AND ASTS are the same except variable names
     while let Some(current_index) = current_index_op {
         let current_dllnode = stack.get(current_index);
         let current_beginning_char_index = current_dllnode.beginning_char_index;
@@ -959,7 +960,7 @@ fn process_emphasis<'a>(
                         let this_dl_unconsumed = total_count - consumed;
                         let is_strong = matching_dl_unconsumed >= 2 && this_dl_unconsumed >= 2;
                         // turn stack items inside the stack delimiters into actual inline content.
-                        let mut emph_children: Vec<InlineContent> = vec![];
+                        let mut emph_children: Vec<InlineContent<&'a str>> = vec![];
                         let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
                         while node_to_eat_index_op.is_some_and(|ntei| {
                             stack.get(ntei).beginning_char_index < current_beginning_char_index
@@ -1087,7 +1088,7 @@ fn process_emphasis<'a>(
                         let this_dl_unconsumed = total_count - consumed;
                         let is_strong = matching_dl_unconsumed >= 2 && this_dl_unconsumed >= 2;
                         // turn stack items inside the stack delimiters into actual inline content.
-                        let mut emph_children: Vec<InlineContent> = vec![];
+                        let mut emph_children: Vec<InlineContent<&'a str>> = vec![];
                         let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
                         while node_to_eat_index_op.is_some_and(|ntei| {
                             stack.get(ntei).beginning_char_index < current_beginning_char_index
