@@ -3,6 +3,7 @@ use crate::block_structure::*;
 pub mod ast_types;
 pub mod block_structure;
 pub mod chars;
+pub mod fake_string_collection;
 pub mod inline;
 pub mod parsers;
 pub mod peekable_char_indices;

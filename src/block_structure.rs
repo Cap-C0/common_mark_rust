@@ -6,6 +6,7 @@ use crate::Block::*;
 use crate::HTMLEndCondition::*;
 use crate::ListType::*;
 use crate::ast_types::*;
+use crate::fake_string_collection::*;
 use crate::inline::*;
 use crate::parsers::*;
 use crate::peekable_char_indices::*;

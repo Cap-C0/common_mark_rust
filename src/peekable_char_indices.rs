@@ -68,6 +68,15 @@ impl<'a> Iterator for BorrowedStringPCI<'a> {
     }
 }
 
+impl<'a> From<&'a str> for BorrowedStringPCI<'a> {
+    fn from(s: &'a str) -> Self {
+        Self {
+            iter: s.char_indices(),
+            peeked: None,
+        }
+    }
+}
+
 impl<'a> BorrowedStringPCI<'a> {
     pub fn new(string_in: &'a str) -> Self {
         BorrowedStringPCI {
