@@ -13,7 +13,7 @@ use crate::string_normalize::normalize_label;
 
 pub type LRDTable = HashMap<String, (String, Option<String>)>;
 
-pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
+pub fn create_block_structure(markdown: &str) -> (AbstractSyntaxTree<String>, LRDTable) {
     let mut lines_list: Vec<&str> = markdown.split('\n').collect();
     if matches!(lines_list.last(), Some(&"")) {
         lines_list.pop();
@@ -21,17 +21,18 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     let mut lines = lines_list.iter().peekable();
 
     let lrd_table = HashMap::new();
-    let document = Document(vec![]);
 
     let Some(line_0) = lines.next() else {
-        return (document, lrd_table);
+        return (AbstractSyntaxTree::new(), lrd_table);
     };
     // dbg!(line_0);
+    let tree: AbstractSyntaxTree<String> = AbstractSyntaxTree::new();
+    let start_id = tree.get_head_id();
     let mut parsing_state = ParsingState {
-        abstract_syntax_tree: document,
+        abstract_syntax_tree: AbstractSyntaxTree::new(),
         lrd_table,
         line_state: LineState::new(line_0),
-        open_block_depth: 0,
+        open_block_id: start_id,
         open_par_above: false,
         open_par_exists: false,
         blank_line_depth: None,
@@ -41,7 +42,7 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     for line in lines {
         // dbg!(&parsing_state);
         parsing_state.set_new_line_state();
-        check_continuation_conditions(&mut parsing_state);
+        check_tree_state(&mut parsing_state);
         parsing_state.set_open_par_exists();
         create_new_block_starts(&mut parsing_state);
         // dbg!(line);
@@ -49,20 +50,21 @@ pub fn create_block_structure(markdown: &str) -> (Block, LRDTable) {
     }
     // dbg!(&parsing_state);
     parsing_state.set_new_line_state();
-    check_continuation_conditions(&mut parsing_state);
+    check_tree_state(&mut parsing_state);
     parsing_state.set_open_par_exists();
     create_new_block_starts(&mut parsing_state);
     close_paragraph(&mut parsing_state);
     (parsing_state.abstract_syntax_tree, parsing_state.lrd_table)
 }
 
+/************************* HELPFUL STRUCTS ********************************/
 #[derive(Debug)]
 struct ParsingState<'a> {
     // current_line_number: usize,
-    abstract_syntax_tree: Block,
+    abstract_syntax_tree: AbstractSyntaxTree<String>,
     lrd_table: LRDTable,
     line_state: LineState<'a>,
-    open_block_depth: usize,
+    open_block_id: NodeId,
     open_par_above: bool,
     open_par_exists: bool,
     // at what "level" was a blank line seen, important
@@ -72,19 +74,19 @@ struct ParsingState<'a> {
 }
 
 impl<'a> ParsingState<'a> {
-    fn set_open_par_above(&mut self) {
-        self.open_par_above = matches!(
-            self.abstract_syntax_tree.get_block(self.open_block_depth),
-            Paragraph(_, true)
-        );
-    }
-
-    fn set_open_par_exists(&mut self) {
-        self.open_par_exists = matches!(
-            self.abstract_syntax_tree.get_last_block(),
-            Paragraph(_, true)
-        );
-    }
+    // fn set_open_par_above(&mut self) {
+    //     self.open_par_above = matches!(
+    //         self.abstract_syntax_tree.get_block(self.open_block_id),
+    //         Paragraph(_, true)
+    //     );
+    // }
+    //
+    // fn set_open_par_exists(&mut self) {
+    //     self.open_par_exists = matches!(
+    //         self.abstract_syntax_tree.get_last_block(),
+    //         Paragraph(_, true)
+    //     );
+    // }
 
     fn set_open_pars(&mut self) {
         self.set_open_par_above();
@@ -195,10 +197,16 @@ mod test_ls {
     }
 }
 
-fn check_continuation_conditions(parsing_state: &mut ParsingState) {
+fn check_tree_state(parsing_state: &mut ParsingState) {
+    let mut current_block_id = parsing_state.abstract_syntax_tree.get_head_id();
+    let mut continuation_conditions_satisfied = true;
     let mut current_block = &parsing_state.abstract_syntax_tree;
     let line_state = &mut parsing_state.line_state;
     // println!("called ccc!");
+    while let Some(current_block_id) = parsing_state
+        .abstract_syntax_tree
+        .get_last_child_id(current_block_id)
+    {}
     'outer: loop {
         match current_block {
             Document(blocks) => match blocks.last() {

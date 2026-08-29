@@ -1,447 +1,453 @@
 use crate::{
-    ast_types::{
-        Block::*,
-        // BlockKind::{Container, Leaf},
-        ListType::*,
-    },
+    ast_types::{Block::*, BlockKind::*, ListType::*},
     block_structure::LRDTable,
     chars::{push_chars_with_entities_and_bs, push_html_reserved_char},
     inline::Inline,
 };
 
-// #[derive(Debug, Copy, PartialEq, Eq, Clone)]
-// pub struct NodeId(usize);
-//
-// #[derive(Debug, PartialEq, Eq)]
-// pub struct AbstractSyntaxTree<T> {
-//     nodes: Vec<Node<T>>,
-//     head: NodeId,
-// }
-//
-// #[derive(Debug, PartialEq, Eq)]
-// pub enum BlockKind {
-//     Leaf,
-//     Container(Vec<NodeId>),
-// }
-//
-// #[derive(Debug, PartialEq, Eq)]
-// struct Node<T> {
-//     block: Block<T>,
-//     block_kind: BlockKind,
-//     parent: Option<NodeId>,
-// }
-//
-// #[derive(Debug, PartialEq, Eq, Clone)]
-// pub enum Block<T> {
-//     Document,
-//     BlockQuote(bool),
-//     /// (children, tight, lt, blank_line_encountered)
-//     List(bool, ListType, bool),
-//     /// (children, continuable, indent requirement)
-//     ListItem(bool, usize),
-//     Heading(T, usize),
-//     Paragraph(T, bool),
-//     ThematicBreak,
-//     /// actualy chars, unrealized blanks
-//     IndentedCodeBlock(T, T), // unrealized blank lines
-//     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
-//     FencedCodeBlock(T, bool, char, T, usize, usize),
-//     /// (characters,is_open, end_condition, )
-//     HTMLBlock(String, bool, HTMLEndCondition),
-// }
+#[derive(Debug, Copy, PartialEq, Eq, Clone)]
+pub struct NodeId(usize);
 
-// impl<T> AbstractSyntaxTree<T> {
-//     pub fn new() -> Self {
-//         AbstractSyntaxTree {
-//             nodes: vec![Node {
-//                 block: Document,
-//                 block_kind: Container(vec![]),
-//                 parent: None,
-//             }],
-//             head: NodeId(0),
-//         }
-//     }
-//
-//     pub fn add_new_node(&mut self, parent: NodeId, block: Block<T>) -> NodeId {
-//         let block_kind = match block {
-//             BlockQuote(..) | List(..) | ListItem(..) => Container(vec![]),
-//             Document => unreachable!(),
-//             _ => Leaf,
-//         };
-//         let child_id = NodeId(self.nodes.len());
-//         self.nodes.push(Node {
-//             block,
-//             block_kind,
-//             parent: Some(parent),
-//         });
-//         let Container(ref mut children) = self.nodes[parent.0].block_kind else {
-//             panic!("The parent of a block *must* be a container")
-//         };
-//         children.push(child_id);
-//         child_id
-//     }
-//
-//     pub fn get_last_child_id(&self, parent: NodeId) -> Option<NodeId> {
-//         match self.nodes[parent.0].block_kind {
-//             Leaf => None,
-//             Container(ref child_ids) => child_ids.last().copied(),
-//         }
-//     }
-//
-//     pub fn get_block(&mut self, node_id: NodeId) -> &mut Block<T> {
-//         &mut self.nodes[node_id.0].block
-//     }
-//
-//     pub fn get_head_id(&self) -> NodeId {
-//         self.head
-//     }
-// }
+#[derive(Debug, PartialEq, Eq)]
+pub struct AbstractSyntaxTree<T> {
+    nodes: Vec<Node<T>>,
+    head: NodeId,
+}
 
-//TODO: put blocks in ref counts, which should allow instant access to them when constructing_new blocks,
-//instead of having to "climb" down to get them.
-//TODO: put this in an Arena!
+#[derive(Debug, PartialEq, Eq)]
+enum BlockKind {
+    Leaf,
+    Container(Vec<NodeId>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Node<T> {
+    block: Block<T>,
+    block_kind: BlockKind,
+    depth: usize,
+    parent_id: Option<NodeId>,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Block {
-    Document(Vec<Block>),
-    BlockQuote(Vec<Block>, bool),
+pub enum Block<T> {
+    Document,
+    BlockQuote(bool),
     /// (children, tight, lt, blank_line_encountered)
-    List(Vec<Block>, bool, ListType, bool),
+    List(bool, ListType, bool),
     /// (children, continuable, indent requirement)
-    ListItem(Vec<Block>, bool, usize),
-    Heading(Inline, usize),
-    Paragraph(Inline, bool),
+    ListItem(bool, usize),
+    Heading(T, usize),
+    Paragraph(T, bool),
     ThematicBreak,
     /// actualy chars, unrealized blanks
-    IndentedCodeBlock(String, String), // unrealized blank lines
+    IndentedCodeBlock(T, T), // unrealized blank lines
     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
-    FencedCodeBlock(String, bool, char, String, usize, usize),
+    FencedCodeBlock(T, bool, char, T, usize, usize),
     /// (characters,is_open, end_condition, )
     HTMLBlock(String, bool, HTMLEndCondition),
 }
 
-impl Block {
-    pub fn get_block(&mut self, open_block_depth: usize) -> &mut Block {
-        self.get_block_helper(open_block_depth)
-    }
-
-    fn get_block_helper(&mut self, open_block_depth: usize) -> &mut Block {
-        match open_block_depth {
-            0 => self,
-            x => match self {
-                Document(blocks)
-                | BlockQuote(blocks, _)
-                | List(blocks, ..)
-                | ListItem(blocks, ..) => blocks.last_mut().unwrap().get_block_helper(x - 1),
-                _ => unreachable!(),
-            },
+impl<T> AbstractSyntaxTree<T> {
+    pub fn new() -> Self {
+        AbstractSyntaxTree {
+            nodes: vec![Node {
+                block: Document,
+                block_kind: Container(vec![]),
+                depth: 0,
+                parent_id: None,
+            }],
+            head: NodeId(0),
         }
     }
 
-    // pub fn get_container(&mut self, next_offset: &Vec<usize>, last_is_leaf: bool) -> &mut Block {
-    //     self.get_block(next_offset[..next_offset.len() - if last_is_leaf { 1 } else { 0 }])
-    // }
-
-    pub fn get_general_container(&mut self, open_block_depth: usize) -> (&mut Block, usize) {
-        let mut new_depth: usize = 0;
-        let mut seen_list: bool = false;
-        let mut current_block: &Block = self;
-        while new_depth < open_block_depth {
-            match current_block {
-                Document(blocks) => match blocks.last() {
-                    // no extra depth here
-                    None => break,
-                    Some(b) => current_block = b,
-                },
-                BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
-                    if seen_list {
-                        if new_depth + 2 > open_block_depth {
-                            break;
-                        }
-                        seen_list = false;
-                        new_depth += 1;
-                    }
-                    new_depth += 1;
-                    match blocks.last() {
-                        None => break,
-                        Some(b) => current_block = b,
-                    }
-                }
-                List(blocks, ..) => {
-                    seen_list = true;
-                    current_block = blocks.last().unwrap();
-                }
-                _ => break,
-            }
-        }
-        (self.get_block(new_depth), new_depth)
-    }
-
-    // pub fn is_leaf(&self) -> bool {
-    //     match self {
-    //         Document(_) | BlockQuote(..) | List(..) | ListItem(..) => false,
-    //         _ => true,
-    //     }
-    // }
-
-    // pub fn parse_inlines(&mut self, lrd_table: &LRDTable) {
-    //     match self {
-    //         Document(blocks) | BlockQuote(blocks, _) | List(blocks, ..) | ListItem(blocks, ..) => {
-    //             for b in blocks {
-    //                 b.parse_inlines(lrd_table);
-    //             }
-    //         }
-    //         Heading(il, _) | Paragraph(il, ..) => {
-    //             il.fill_content(lrd_table);
-    //         }
-    //         _ => (),
-    //     }
-    // }
-
-    pub fn deepest_matched_blockquote(&mut self, max_depth: usize) -> usize {
-        let mut current_depth = 0;
-        let mut last_blockquote_depth = 0;
-        let mut current_block: &Block = self;
-        while current_depth < max_depth {
-            match current_block {
-                Document(blocks) | List(blocks, ..) | ListItem(blocks, ..) => {
-                    current_depth += 1;
-                    if !blocks.is_empty() {
-                        current_block = blocks.last().unwrap()
-                    } else {
-                        break;
-                    }
-                }
-                BlockQuote(blocks, _) => {
-                    current_depth += 1;
-                    last_blockquote_depth = current_depth;
-                    if !blocks.is_empty() {
-                        current_block = blocks.last().unwrap()
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
-            }
-        }
-        last_blockquote_depth
-    }
-
-    pub fn close_open_block(&mut self, deeper_than: i32) {
-        match self {
-            Document(blocks) | List(blocks, ..) | ListItem(blocks, ..) => {
-                if !blocks.is_empty() {
-                    blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
-                }
-            }
-            BlockQuote(blocks, is_open) => {
-                if deeper_than < 0 {
-                    *is_open = false
-                } else {
-                    if !blocks.is_empty() {
-                        blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
-                    }
-                }
-            }
-            _ => (),
-        }
-    }
-
-    // pub fn is_general_block_appendable(&self) -> bool {
-    //     match self {
-    //         Document(_) | BlockQuote(_, true) | ListItem(_, _, _) => true,
-    //         _ => false,
-    //     }
-    // }
-
-    // pub fn reset_blank_line_seen(&mut self, depth: usize) {
-    //     if depth > 0 {
-    //         match self {
-    //             Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
-    //                 if blocks.is_empty() {
-    //                     return;
-    //                 }
-    //                 blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
-    //             }
-    //             List(blocks, _, _, blank_line_encountered) => {
-    //                 *blank_line_encountered = false;
-    //                 if blocks.is_empty() {
-    //                     return;
-    //                 }
-    //                 blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
-    //             }
-    //             _ => return,
-    //         }
-    //     }
-    // }
-
-    // fn detighten_deeper_than(&mut self, depth: i32) {
-    //     match self {
-    //         Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
-    //             if blocks.is_empty() {
-    //                 return;
-    //             }
-    //             blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
-    //         }
-    //         List(blocks, _, _, blank_line_encountered) => {
-    //             if depth <= 0 {
-    //                 *blank_line_encountered = true
-    //             }
-    //             if blocks.is_empty() {
-    //                 return;
-    //             }
-    //             blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
-    //         }
-    //         _ => return,
-    //     }
-    // }
-
-    pub fn get_last_block(&mut self) -> &mut Block {
-        let descend = match self {
-            Document(blocks)
-            | BlockQuote(blocks, _)
-            | List(blocks, _, _, _)
-            | ListItem(blocks, _, _) => !blocks.is_empty(),
-            _ => false,
+    pub fn add_new_node(&mut self, parent: NodeId, block: Block<T>) -> NodeId {
+        let parent_depth = self.nodes[parent.0].depth;
+        let block_kind = match block {
+            BlockQuote(..) | List(..) | ListItem(..) => Container(vec![]),
+            Document => unreachable!(),
+            _ => Leaf,
         };
+        let child_id = NodeId(self.nodes.len());
+        self.nodes.push(Node {
+            block,
+            block_kind,
+            depth: parent_depth + 1,
+            parent_id: Some(parent),
+        });
+        let Container(ref mut children) = self.nodes[parent.0].block_kind else {
+            panic!("The parent of a block *must* be a container")
+        };
+        children.push(child_id);
+        child_id
+    }
 
-        if !descend {
-            self
-        } else {
-            match self {
-                Document(blocks)
-                | BlockQuote(blocks, _)
-                | List(blocks, _, _, _)
-                | ListItem(blocks, _, _) => blocks.last_mut().unwrap().get_last_block(),
-                _ => unreachable!("already bool checked earlier"),
-            }
+    pub fn get_last_child_id(&self, parent: NodeId) -> Option<NodeId> {
+        match self.nodes[parent.0].block_kind {
+            Leaf => None,
+            Container(ref child_ids) => child_ids.last().copied(),
         }
     }
 
-    pub fn to_html(&self, lrd_table: &LRDTable) -> String {
-        let mut str_out = String::new();
-        self.to_html_helper(false, &mut str_out, lrd_table);
-        str_out
+    pub fn get_block(&mut self, node_id: NodeId) -> &mut Block<T> {
+        &mut self.nodes[node_id.0].block
     }
 
-    //TODO: find a more elegant way of doing this \n business
-    fn to_html_helper(
-        &self,
-        in_tight_list: bool,
-        string_builder: &mut String,
-        lrd_table: &LRDTable,
-    ) {
-        match self {
-            Document(blocks) => {
-                for b in blocks {
-                    b.to_html_helper(false, string_builder, lrd_table);
-                }
-            }
-            BlockQuote(blocks, _) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                string_builder.push_str("<blockquote>\n");
-                for b in blocks {
-                    b.to_html_helper(false, string_builder, lrd_table);
-                }
-                string_builder.push_str("</blockquote>\n");
-            }
-            List(blocks, is_tight, list_type, _) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                match list_type {
-                    OrderedList(_, n) => {
-                        if *n != 1 {
-                            string_builder.push_str(&format!("<ol start=\"{}\">\n", n));
-                        } else {
-                            string_builder.push_str("<ol>\n");
-                        }
-                        for b in blocks {
-                            b.to_html_helper(*is_tight, string_builder, lrd_table);
-                        }
-                        string_builder.push_str("</ol>\n");
-                    }
-                    UnorderedList(_) => {
-                        string_builder.push_str("<ul>\n");
-                        for b in blocks {
-                            b.to_html_helper(*is_tight, string_builder, lrd_table);
-                        }
-                        string_builder.push_str("</ul>\n");
-                    }
-                }
-            }
-            ListItem(blocks, ..) => {
-                string_builder.push_str("<li>");
-                for b in blocks {
-                    b.to_html_helper(in_tight_list, string_builder, lrd_table);
-                }
-                string_builder.push_str("</li>\n");
-            }
-            Heading(il, h) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                string_builder.push_str(&format!("<h{}>", h));
-                il.to_html(string_builder, lrd_table);
-                string_builder.push_str(&format!("</h{}>\n", h));
-            }
-            Paragraph(il, _) => {
-                if !in_tight_list && !il.string.is_empty() {
-                    if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                        string_builder.push('\n');
-                    }
-                    string_builder.push_str("<p>");
-                }
-                il.to_html(string_builder, lrd_table);
-                if !in_tight_list && !il.string.is_empty() {
-                    string_builder.push_str("</p>\n");
-                }
-            }
-            ThematicBreak => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                string_builder.push_str("<hr />\n")
-            }
-            IndentedCodeBlock(string, _items1) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                string_builder.push_str("<pre><code>");
-                for c in string.chars() {
-                    push_html_reserved_char(c, string_builder);
-                }
-                string_builder.push_str("\n</code></pre>\n");
-            }
-            FencedCodeBlock(string, _, _, lang_hint, _, _) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                string_builder.push_str("<pre><code");
-                if !lang_hint.is_empty() {
-                    string_builder.push_str(" class=\"language-");
-                    push_chars_with_entities_and_bs(lang_hint, string_builder, false);
-                    string_builder.push('\"');
-                }
-                string_builder.push('>');
-                for c in string.chars() {
-                    push_html_reserved_char(c, string_builder);
-                }
-                string_builder.push_str("</code></pre>\n");
-            }
-            HTMLBlock(string, ..) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                for c in string.chars() {
-                    string_builder.push(c);
-                }
-                string_builder.push('\n');
-            }
+    pub fn get_head_id(&self) -> NodeId {
+        self.head
+    }
+
+    pub fn get_last_general_container_id(&self, node_id: NodeId) -> NodeId {
+        match self.nodes[node_id.0].block_kind {
+            Container(_) => node_id,
+            Leaf => self.nodes[node_id.0].parent_id.unwrap(),
         }
     }
 }
+
+//TODO: put this in an Arena!
+
+// #[derive(Debug, PartialEq, Eq, Clone)]
+// pub enum Block {
+//     Document(Vec<Block>),
+//     BlockQuote(Vec<Block>, bool),
+//     /// (children, tight, lt, blank_line_encountered)
+//     List(Vec<Block>, bool, ListType, bool),
+//     /// (children, continuable, indent requirement)
+//     ListItem(Vec<Block>, bool, usize),
+//     Heading(Inline, usize),
+//     Paragraph(Inline, bool),
+//     ThematicBreak,
+//     /// actualy chars, unrealized blanks
+//     IndentedCodeBlock(String, String), // unrealized blank lines
+//     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
+//     FencedCodeBlock(String, bool, char, String, usize, usize),
+//     /// (characters,is_open, end_condition, )
+//     HTMLBlock(String, bool, HTMLEndCondition),
+// }
+//
+// impl Block {
+//     pub fn get_block(&mut self, open_block_depth: usize) -> &mut Block {
+//         self.get_block_helper(open_block_depth)
+//     }
+//
+//     fn get_block_helper(&mut self, open_block_depth: usize) -> &mut Block {
+//         match open_block_depth {
+//             0 => self,
+//             x => match self {
+//                 Document(blocks)
+//                 | BlockQuote(blocks, _)
+//                 | List(blocks, ..)
+//                 | ListItem(blocks, ..) => blocks.last_mut().unwrap().get_block_helper(x - 1),
+//                 _ => unreachable!(),
+//             },
+//         }
+//     }
+//
+//     // pub fn get_container(&mut self, next_offset: &Vec<usize>, last_is_leaf: bool) -> &mut Block {
+//     //     self.get_block(next_offset[..next_offset.len() - if last_is_leaf { 1 } else { 0 }])
+//     // }
+//
+//     pub fn get_general_container(&mut self, open_block_depth: usize) -> (&mut Block, usize) {
+//         let mut new_depth: usize = 0;
+//         let mut seen_list: bool = false;
+//         let mut current_block: &Block = self;
+//         while new_depth < open_block_depth {
+//             match current_block {
+//                 Document(blocks) => match blocks.last() {
+//                     // no extra depth here
+//                     None => break,
+//                     Some(b) => current_block = b,
+//                 },
+//                 BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
+//                     if seen_list {
+//                         if new_depth + 2 > open_block_depth {
+//                             break;
+//                         }
+//                         seen_list = false;
+//                         new_depth += 1;
+//                     }
+//                     new_depth += 1;
+//                     match blocks.last() {
+//                         None => break,
+//                         Some(b) => current_block = b,
+//                     }
+//                 }
+//                 List(blocks, ..) => {
+//                     seen_list = true;
+//                     current_block = blocks.last().unwrap();
+//                 }
+//                 _ => break,
+//             }
+//         }
+//         (self.get_block(new_depth), new_depth)
+//     }
+//
+//     // pub fn is_leaf(&self) -> bool {
+//     //     match self {
+//     //         Document(_) | BlockQuote(..) | List(..) | ListItem(..) => false,
+//     //         _ => true,
+//     //     }
+//     // }
+//
+//     // pub fn parse_inlines(&mut self, lrd_table: &LRDTable) {
+//     //     match self {
+//     //         Document(blocks) | BlockQuote(blocks, _) | List(blocks, ..) | ListItem(blocks, ..) => {
+//     //             for b in blocks {
+//     //                 b.parse_inlines(lrd_table);
+//     //             }
+//     //         }
+//     //         Heading(il, _) | Paragraph(il, ..) => {
+//     //             il.fill_content(lrd_table);
+//     //         }
+//     //         _ => (),
+//     //     }
+//     // }
+//
+//     pub fn deepest_matched_blockquote(&mut self, max_depth: usize) -> usize {
+//         let mut current_depth = 0;
+//         let mut last_blockquote_depth = 0;
+//         let mut current_block: &Block = self;
+//         while current_depth < max_depth {
+//             match current_block {
+//                 Document(blocks) | List(blocks, ..) | ListItem(blocks, ..) => {
+//                     current_depth += 1;
+//                     if !blocks.is_empty() {
+//                         current_block = blocks.last().unwrap()
+//                     } else {
+//                         break;
+//                     }
+//                 }
+//                 BlockQuote(blocks, _) => {
+//                     current_depth += 1;
+//                     last_blockquote_depth = current_depth;
+//                     if !blocks.is_empty() {
+//                         current_block = blocks.last().unwrap()
+//                     } else {
+//                         break;
+//                     }
+//                 }
+//                 _ => break,
+//             }
+//         }
+//         last_blockquote_depth
+//     }
+//
+//     pub fn close_open_block(&mut self, deeper_than: i32) {
+//         match self {
+//             Document(blocks) | List(blocks, ..) | ListItem(blocks, ..) => {
+//                 if !blocks.is_empty() {
+//                     blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
+//                 }
+//             }
+//             BlockQuote(blocks, is_open) => {
+//                 if deeper_than < 0 {
+//                     *is_open = false
+//                 } else {
+//                     if !blocks.is_empty() {
+//                         blocks.last_mut().unwrap().close_open_block(deeper_than - 1)
+//                     }
+//                 }
+//             }
+//             _ => (),
+//         }
+//     }
+//
+//     // pub fn is_general_block_appendable(&self) -> bool {
+//     //     match self {
+//     //         Document(_) | BlockQuote(_, true) | ListItem(_, _, _) => true,
+//     //         _ => false,
+//     //     }
+//     // }
+//
+//     // pub fn reset_blank_line_seen(&mut self, depth: usize) {
+//     //     if depth > 0 {
+//     //         match self {
+//     //             Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
+//     //                 if blocks.is_empty() {
+//     //                     return;
+//     //                 }
+//     //                 blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
+//     //             }
+//     //             List(blocks, _, _, blank_line_encountered) => {
+//     //                 *blank_line_encountered = false;
+//     //                 if blocks.is_empty() {
+//     //                     return;
+//     //                 }
+//     //                 blocks.last_mut().unwrap().reset_blank_line_seen(depth - 1);
+//     //             }
+//     //             _ => return,
+//     //         }
+//     //     }
+//     // }
+//
+//     // fn detighten_deeper_than(&mut self, depth: i32) {
+//     //     match self {
+//     //         Document(blocks) | BlockQuote(blocks, _) | ListItem(blocks, _, _) => {
+//     //             if blocks.is_empty() {
+//     //                 return;
+//     //             }
+//     //             blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
+//     //         }
+//     //         List(blocks, _, _, blank_line_encountered) => {
+//     //             if depth <= 0 {
+//     //                 *blank_line_encountered = true
+//     //             }
+//     //             if blocks.is_empty() {
+//     //                 return;
+//     //             }
+//     //             blocks.last_mut().unwrap().detighten_deeper_than(depth - 1);
+//     //         }
+//     //         _ => return,
+//     //     }
+//     // }
+//
+//     pub fn get_last_block(&mut self) -> &mut Block {
+//         let descend = match self {
+//             Document(blocks)
+//             | BlockQuote(blocks, _)
+//             | List(blocks, _, _, _)
+//             | ListItem(blocks, _, _) => !blocks.is_empty(),
+//             _ => false,
+//         };
+//
+//         if !descend {
+//             self
+//         } else {
+//             match self {
+//                 Document(blocks)
+//                 | BlockQuote(blocks, _)
+//                 | List(blocks, _, _, _)
+//                 | ListItem(blocks, _, _) => blocks.last_mut().unwrap().get_last_block(),
+//                 _ => unreachable!("already bool checked earlier"),
+//             }
+//         }
+//     }
+//
+//     pub fn to_html(&self, lrd_table: &LRDTable) -> String {
+//         let mut str_out = String::new();
+//         self.to_html_helper(false, &mut str_out, lrd_table);
+//         str_out
+//     }
+//
+//     //TODO: find a more elegant way of doing this \n business
+//     fn to_html_helper(
+//         &self,
+//         in_tight_list: bool,
+//         string_builder: &mut String,
+//         lrd_table: &LRDTable,
+//     ) {
+//         match self {
+//             Document(blocks) => {
+//                 for b in blocks {
+//                     b.to_html_helper(false, string_builder, lrd_table);
+//                 }
+//             }
+//             BlockQuote(blocks, _) => {
+//                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+//                     string_builder.push('\n');
+//                 }
+//                 string_builder.push_str("<blockquote>\n");
+//                 for b in blocks {
+//                     b.to_html_helper(false, string_builder, lrd_table);
+//                 }
+//                 string_builder.push_str("</blockquote>\n");
+//             }
+//             List(blocks, is_tight, list_type, _) => {
+//                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+//                     string_builder.push('\n');
+//                 }
+//                 match list_type {
+//                     OrderedList(_, n) => {
+//                         if *n != 1 {
+//                             string_builder.push_str(&format!("<ol start=\"{}\">\n", n));
+//                         } else {
+//                             string_builder.push_str("<ol>\n");
+//                         }
+//                         for b in blocks {
+//                             b.to_html_helper(*is_tight, string_builder, lrd_table);
+//                         }
+//                         string_builder.push_str("</ol>\n");
+//                     }
+//                     UnorderedList(_) => {
+//                         string_builder.push_str("<ul>\n");
+//                         for b in blocks {
+//                             b.to_html_helper(*is_tight, string_builder, lrd_table);
+//                         }
+//                         string_builder.push_str("</ul>\n");
+//                     }
+//                 }
+//             }
+//             ListItem(blocks, ..) => {
+//                 string_builder.push_str("<li>");
+//                 for b in blocks {
+//                     b.to_html_helper(in_tight_list, string_builder, lrd_table);
+//                 }
+//                 string_builder.push_str("</li>\n");
+//             }
+//             Heading(il, h) => {
+//                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+//                     string_builder.push('\n');
+//                 }
+//                 string_builder.push_str(&format!("<h{}>", h));
+//                 il.to_html(string_builder, lrd_table);
+//                 string_builder.push_str(&format!("</h{}>\n", h));
+//             }
+//             Paragraph(il, _) => {
+//                 if !in_tight_list && !il.string.is_empty() {
+//                     if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+//                         string_builder.push('\n');
+//                     }
+//                     string_builder.push_str("<p>");
+//                 }
+//                 il.to_html(string_builder, lrd_table);
+//                 if !in_tight_list && !il.string.is_empty() {
+//                     string_builder.push_str("</p>\n");
+//                 }
+//             }
+//             ThematicBreak => {
+//                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+//                     string_builder.push('\n');
+//                 }
+//                 string_builder.push_str("<hr />\n")
+//             }
+//             IndentedCodeBlock(string, _items1) => {
+//                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+//                     string_builder.push('\n');
+//                 }
+//                 string_builder.push_str("<pre><code>");
+//                 for c in string.chars() {
+//                     push_html_reserved_char(c, string_builder);
+//                 }
+//                 string_builder.push_str("\n</code></pre>\n");
+//             }
+//             FencedCodeBlock(string, _, _, lang_hint, _, _) => {
+//                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+//                     string_builder.push('\n');
+//                 }
+//                 string_builder.push_str("<pre><code");
+//                 if !lang_hint.is_empty() {
+//                     string_builder.push_str(" class=\"language-");
+//                     push_chars_with_entities_and_bs(lang_hint, string_builder, false);
+//                     string_builder.push('\"');
+//                 }
+//                 string_builder.push('>');
+//                 for c in string.chars() {
+//                     push_html_reserved_char(c, string_builder);
+//                 }
+//                 string_builder.push_str("</code></pre>\n");
+//             }
+//             HTMLBlock(string, ..) => {
+//                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+//                     string_builder.push('\n');
+//                 }
+//                 for c in string.chars() {
+//                     string_builder.push(c);
+//                 }
+//                 string_builder.push('\n');
+//             }
+//         }
+//     }
+// }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum ListType {
