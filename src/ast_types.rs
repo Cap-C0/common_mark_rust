@@ -32,9 +32,9 @@ struct Node<T> {
 pub enum Block<T> {
     Document,
     BlockQuote(bool),
-    /// (children, tight, lt, blank_line_encountered)
+    /// (tight, lt, blank_line_encountered)
     List(bool, ListType, bool),
-    /// (children, continuable, indent requirement)
+    /// (continuable, indent requirement)
     ListItem(bool, usize),
     Heading(T, usize),
     Paragraph(T, bool),
@@ -92,8 +92,36 @@ impl<T> AbstractSyntaxTree<T> {
         &mut self.nodes[node_id.0].block
     }
 
+    pub fn get_block_ref(&self, node_id: NodeId) -> &Block<T> {
+        &self.nodes[node_id.0].block
+    }
+
+    pub fn replace_block(&mut self, node_id: NodeId, new_block: Block<T>) {
+        self.nodes[node_id.0].block_kind = match new_block {
+            BlockQuote(..) | List(..) | ListItem(..) => Container(vec![]),
+            Document => unreachable!(),
+            _ => Leaf,
+        };
+        self.nodes[node_id.0].block = new_block;
+    }
+
+    pub fn get_block_depth(&self, node_id: NodeId) -> usize {
+        self.nodes[node_id.0].depth
+    }
+
     pub fn get_head_id(&self) -> NodeId {
         self.head
+    }
+
+    pub fn get_parent_id(&self, node_id: NodeId) -> Option<NodeId> {
+        self.nodes[node_id.0].parent_id
+    }
+
+    pub fn has_no_children(&self, node_id: NodeId) -> bool {
+        match self.nodes[node_id.0].block_kind {
+            Leaf => true,
+            Container(ref node_ids) => node_ids.is_empty(),
+        }
     }
 
     pub fn get_last_general_container_id(&self, node_id: NodeId) -> NodeId {
