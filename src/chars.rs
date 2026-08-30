@@ -140,13 +140,17 @@ pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
 }
 
 type CharPusher = dyn FnMut(char, &mut String);
-pub fn push_chars_with_entities_and_bs(str_in: &str, string_builder: &mut String, in_url: bool) {
+pub fn push_chars_with_entities_and_bs<Offset>(
+    peekable_char_indices: &impl PeekableCharIndices<Offset>,
+    string_builder: &mut String,
+    in_url: bool,
+) {
     let mut char_push_fn: Box<CharPusher> = if in_url {
         Box::new(push_character_in_uri)
     } else {
         Box::new(push_html_reserved_char)
     };
-    let mut peekable_char_indices = BorrowedStringPCI::new(str_in);
+    let mut peekable_char_indices = peekable_char_indices.clone();
     while let Some(c) = peekable_char_indices.next() {
         match c {
             '%' => {

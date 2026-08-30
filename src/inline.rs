@@ -38,6 +38,32 @@ impl Inline {
     }
 }
 
+pub trait LeafContainerInline {
+    fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable);
+    fn is_empty(&self) -> bool;
+    fn char_iter(&self) -> impl Iterator<Item = char>;
+}
+
+impl LeafContainerInline for String {
+    fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable) {
+        for ic in parse_inline(self, lrd_table) {
+            ic.to_html(self, string_builder, lrd_table);
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+    fn char_iter(&self) -> impl Iterator<Item = char> {
+        self.chars()
+    }
+}
+
+pub fn inline_string_to_html(str_in: &str, string_builder: &mut String, lrd_table: &LRDTable) {
+    for ic in parse_inline(str_in, lrd_table) {
+        ic.to_html(str_in, string_builder, lrd_table);
+    }
+}
+
 // we do not need to enforce multiple new line requirements in these parsers as that will be enforced
 // by paragraphs ending at new lines
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -95,7 +121,11 @@ impl<'a> InlineContent<&'a str> {
             Softbreak => string_builder.push('\n'),
             Hardbreak => string_builder.push_str("<br />\n"),
             Text(string) => {
-                push_chars_with_entities_and_bs(string, string_builder, false);
+                push_chars_with_entities_and_bs(
+                    &BorrowedStringPCI::new(string),
+                    string_builder,
+                    false,
+                );
             }
             Emph(inline_contents) => {
                 string_builder.push_str("<em>");
@@ -115,7 +145,11 @@ impl<'a> InlineContent<&'a str> {
                 if *is_image {
                     string_builder.push_str("<img src=\"");
                     if let Some(dest_string) = dest_op {
-                        push_chars_with_entities_and_bs(*dest_string, string_builder, true);
+                        push_chars_with_entities_and_bs(
+                            &BorrowedStringPCI::new(dest_string),
+                            string_builder,
+                            true,
+                        );
                     }
                     string_builder.push_str("\" alt=\"");
                     for ic in inline_contents {
@@ -124,19 +158,31 @@ impl<'a> InlineContent<&'a str> {
                     string_builder.push_str("\" ");
                     if let Some(tit_string) = tit_op {
                         string_builder.push_str("title=\"");
-                        push_chars_with_entities_and_bs(tit_string, string_builder, false);
+                        push_chars_with_entities_and_bs(
+                            &BorrowedStringPCI::new(tit_string),
+                            string_builder,
+                            false,
+                        );
                         string_builder.push_str("\" ");
                     }
                     string_builder.push_str("/>");
                 } else {
                     string_builder.push_str("<a href=\"");
                     if let Some(dest_string) = dest_op {
-                        push_chars_with_entities_and_bs(dest_string, string_builder, true);
+                        push_chars_with_entities_and_bs(
+                            &BorrowedStringPCI::new(dest_string),
+                            string_builder,
+                            true,
+                        );
                     }
                     string_builder.push('\"');
                     if let Some(tit_string) = tit_op {
                         string_builder.push_str(" title=\"");
-                        push_chars_with_entities_and_bs(tit_string, string_builder, false);
+                        push_chars_with_entities_and_bs(
+                            &BorrowedStringPCI::new(tit_string),
+                            string_builder,
+                            false,
+                        );
                         string_builder.push('\"');
                     }
                     string_builder.push('>');
@@ -150,7 +196,11 @@ impl<'a> InlineContent<&'a str> {
                 let (dest, tit_op) = lrd_table.get(normalized_label).unwrap();
                 if *is_image {
                     string_builder.push_str("<img src=\"");
-                    push_chars_with_entities_and_bs(dest, string_builder, true);
+                    push_chars_with_entities_and_bs(
+                        &BorrowedStringPCI::new(dest),
+                        string_builder,
+                        true,
+                    );
                     string_builder.push_str("\" alt=\"");
                     for ic in inline_contents {
                         ic.to_alt_text(string_array, string_builder);
@@ -158,17 +208,29 @@ impl<'a> InlineContent<&'a str> {
                     string_builder.push_str("\" ");
                     if let Some(tit_string) = tit_op {
                         string_builder.push_str("title=\"");
-                        push_chars_with_entities_and_bs(tit_string, string_builder, false);
+                        push_chars_with_entities_and_bs(
+                            &BorrowedStringPCI::new(tit_string),
+                            string_builder,
+                            false,
+                        );
                         string_builder.push_str("\" ");
                     }
                     string_builder.push_str("/>");
                 } else {
                     string_builder.push_str("<a href=\"");
-                    push_chars_with_entities_and_bs(dest, string_builder, true);
+                    push_chars_with_entities_and_bs(
+                        &BorrowedStringPCI::new(dest),
+                        string_builder,
+                        true,
+                    );
                     string_builder.push('\"');
                     if let Some(tit) = tit_op {
                         string_builder.push_str(" title=\"");
-                        push_chars_with_entities_and_bs(tit, string_builder, false);
+                        push_chars_with_entities_and_bs(
+                            &BorrowedStringPCI::new(tit),
+                            string_builder,
+                            false,
+                        );
                         string_builder.push('\"');
                     }
                     string_builder.push('>');
@@ -217,7 +279,11 @@ impl<'a> InlineContent<&'a str> {
             Softbreak => _string_builder.push('\n'),
             Hardbreak => _string_builder.push('\n'),
             Text(text_string) => {
-                push_chars_with_entities_and_bs(text_string, _string_builder, false);
+                push_chars_with_entities_and_bs(
+                    &BorrowedStringPCI::new(text_string),
+                    _string_builder,
+                    false,
+                );
             }
             Emph(inline_contents) => {
                 for ic in inline_contents {

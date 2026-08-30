@@ -2,7 +2,8 @@ use crate::{
     ast_types::{Block::*, BlockKind::*, ListType::*},
     block_structure::LRDTable,
     chars::{push_chars_with_entities_and_bs, push_html_reserved_char},
-    inline::Inline,
+    inline::{Inline, LeafContainerInline, inline_string_to_html},
+    peekable_char_indices::BorrowedStringPCI,
 };
 
 #[derive(Debug, Copy, PartialEq, Eq, Clone)]
@@ -47,7 +48,7 @@ pub enum Block<T> {
     HTMLBlock(String, bool, HTMLEndCondition),
 }
 
-impl<T> AbstractSyntaxTree<T> {
+impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
     pub fn new() -> Self {
         AbstractSyntaxTree {
             nodes: vec![Node {
@@ -123,11 +124,139 @@ impl<T> AbstractSyntaxTree<T> {
             Container(ref node_ids) => node_ids.is_empty(),
         }
     }
+}
+impl AbstractSyntaxTree<String> {
+    pub fn to_html(&self, lrd_table: &LRDTable) -> String {
+        let mut str_out = String::new();
+        self.to_html_helper(self.head, false, &mut str_out, lrd_table);
+        str_out
+    }
 
-    pub fn get_last_general_container_id(&self, node_id: NodeId) -> NodeId {
-        match self.nodes[node_id.0].block_kind {
-            Container(_) => node_id,
-            Leaf => self.nodes[node_id.0].parent_id.unwrap(),
+    pub fn to_html_helper(
+        &self,
+        current_node: NodeId,
+        in_tight_list: bool,
+        string_builder: &mut String,
+        lrd_table: &LRDTable,
+    ) {
+        let child_op = if let Container(ref children) = self.nodes[current_node.0].block_kind {
+            Some(children)
+        } else {
+            None
+        };
+        match &self.nodes[current_node.0].block {
+            Document => {
+                for node_id in child_op.unwrap() {
+                    self.to_html_helper(*node_id, false, string_builder, lrd_table);
+                }
+            }
+            BlockQuote(_) => {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                string_builder.push_str("<blockquote>\n");
+                for node_id in child_op.unwrap() {
+                    self.to_html_helper(*node_id, false, string_builder, lrd_table);
+                }
+                string_builder.push_str("</blockquote>\n");
+            }
+            List(is_tight, list_type, _) => {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                match list_type {
+                    OrderedList(_, n) => {
+                        if *n != 1 {
+                            string_builder.push_str(&format!("<ol start=\"{}\">\n", n));
+                        } else {
+                            string_builder.push_str("<ol>\n");
+                        }
+                        for node_id in child_op.unwrap() {
+                            self.to_html_helper(*node_id, *is_tight, string_builder, lrd_table);
+                        }
+                        string_builder.push_str("</ol>\n");
+                    }
+                    UnorderedList(_) => {
+                        string_builder.push_str("<ul>\n");
+                        for node_id in child_op.unwrap() {
+                            self.to_html_helper(*node_id, *is_tight, string_builder, lrd_table);
+                        }
+                        string_builder.push_str("</ul>\n");
+                    }
+                }
+            }
+            ListItem(..) => {
+                string_builder.push_str("<li>");
+                for node_id in child_op.unwrap() {
+                    self.to_html_helper(*node_id, in_tight_list, string_builder, lrd_table);
+                }
+                string_builder.push_str("</li>\n");
+            }
+            Heading(il, h) => {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                string_builder.push_str(&format!("<h{}>", h));
+                il.to_html(string_builder, lrd_table);
+                string_builder.push_str(&format!("</h{}>\n", h));
+            }
+            Paragraph(il, _) => {
+                if !in_tight_list && !il.is_empty() {
+                    if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+                        string_builder.push('\n');
+                    }
+                    string_builder.push_str("<p>");
+                }
+                il.to_html(string_builder, lrd_table);
+                if !in_tight_list && !il.is_empty() {
+                    string_builder.push_str("</p>\n");
+                }
+            }
+            ThematicBreak => {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                string_builder.push_str("<hr />\n")
+            }
+            IndentedCodeBlock(string, _items1) => {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                string_builder.push_str("<pre><code>");
+                for c in string.char_iter() {
+                    push_html_reserved_char(c, string_builder);
+                }
+                string_builder.push_str("\n</code></pre>\n");
+            }
+            FencedCodeBlock(string, _, _, lang_hint, _, _) => {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                string_builder.push_str("<pre><code");
+                if !lang_hint.is_empty() {
+                    string_builder.push_str(" class=\"language-");
+                    push_chars_with_entities_and_bs(
+                        &BorrowedStringPCI::new(lang_hint),
+                        string_builder,
+                        false,
+                    );
+                    string_builder.push('\"');
+                }
+                string_builder.push('>');
+                for c in string.char_iter() {
+                    push_html_reserved_char(c, string_builder);
+                }
+                string_builder.push_str("</code></pre>\n");
+            }
+            HTMLBlock(string, ..) => {
+                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
+                    string_builder.push('\n');
+                }
+                for c in string.chars() {
+                    string_builder.push(c);
+                }
+                string_builder.push('\n');
+            }
         }
     }
 }
@@ -358,6 +487,7 @@ impl<T> AbstractSyntaxTree<T> {
 //     }
 //
 //     //TODO: find a more elegant way of doing this \n business
+//
 //     fn to_html_helper(
 //         &self,
 //         in_tight_list: bool,
