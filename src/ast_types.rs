@@ -1,3 +1,5 @@
+use core::fmt;
+
 use crate::{
     ast_types::{Block::*, BlockKind::*, ListType::*},
     block_structure::LRDTable,
@@ -9,7 +11,8 @@ use crate::{
 #[derive(Debug, Copy, PartialEq, Eq, Clone)]
 pub struct NodeId(usize);
 
-#[derive(Debug, PartialEq, Eq)]
+//TODO: make a nice debug for this.
+#[derive(PartialEq, Eq)]
 pub struct AbstractSyntaxTree<T> {
     nodes: Vec<Node<T>>,
     head: NodeId,
@@ -33,8 +36,8 @@ struct Node<T> {
 pub enum Block<T> {
     Document,
     BlockQuote(bool),
-    /// (tight, lt, blank_line_encountered)
-    List(bool, ListType, bool),
+    /// (tight, lt,)
+    List(bool, ListType),
     /// (continuable, indent requirement)
     ListItem(bool, usize),
     Heading(T, usize),
@@ -46,6 +49,45 @@ pub enum Block<T> {
     FencedCodeBlock(T, bool, char, T, usize, usize),
     /// (characters,is_open, end_condition, )
     HTMLBlock(String, bool, HTMLEndCondition),
+}
+
+impl<T: fmt::Debug> fmt::Debug for AbstractSyntaxTree<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "")?;
+        self.fmt_helper(f, self.head, 0)
+    }
+}
+
+impl<T: fmt::Debug> AbstractSyntaxTree<T> {
+    fn fmt_helper(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        current_node_id: NodeId,
+        depth: usize,
+    ) -> fmt::Result {
+        let child_op = if let Container(ref children) = self.nodes[current_node_id.0].block_kind {
+            Some(children)
+        } else {
+            None
+        };
+        let indent = "  ".repeat(depth);
+        writeln!(
+            f,
+            "{}- [{:?}] {:?}",
+            indent, current_node_id, self.nodes[current_node_id.0].block
+        )?;
+
+        match self.nodes[current_node_id.0].block_kind {
+            Container(ref children_id) => {
+                for child_id in children_id {
+                    self.fmt_helper(f, *child_id, depth + 1)?;
+                }
+            }
+            _ => (),
+        }
+
+        Ok(())
+    }
 }
 
 impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
@@ -127,6 +169,7 @@ impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
 }
 impl AbstractSyntaxTree<String> {
     pub fn to_html(&self, lrd_table: &LRDTable) -> String {
+        dbg!("calling_to_html!");
         let mut str_out = String::new();
         self.to_html_helper(self.head, false, &mut str_out, lrd_table);
         str_out
@@ -144,7 +187,7 @@ impl AbstractSyntaxTree<String> {
         } else {
             None
         };
-        match &self.nodes[current_node.0].block {
+        match (&self.nodes[current_node.0].block) {
             Document => {
                 for node_id in child_op.unwrap() {
                     self.to_html_helper(*node_id, false, string_builder, lrd_table);
@@ -160,11 +203,11 @@ impl AbstractSyntaxTree<String> {
                 }
                 string_builder.push_str("</blockquote>\n");
             }
-            List(is_tight, list_type, _) => {
+            List(is_tight, list_type) => {
                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
-                match list_type {
+                match dbg!(list_type) {
                     OrderedList(_, n) => {
                         if *n != 1 {
                             string_builder.push_str(&format!("<ol start=\"{}\">\n", n));

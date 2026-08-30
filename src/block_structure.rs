@@ -78,12 +78,13 @@ struct ParsingState {
 }
 
 impl ParsingState {
-    fn set_new_line_state(&mut self) {
+    fn set_new_line_state(&mut self, document_head: NodeId) {
         self.line_number += 1;
         self.open_par_above = false;
         self.lcpi_op = None;
         self.deepest_quote = 0;
         self.snmoqio = None;
+        self.open_block_id = document_head;
     }
 }
 
@@ -187,9 +188,17 @@ fn check_tree_state(
     parsing_state: &mut ParsingState,
     line_state_op: &mut Option<&mut LineState>,
 ) {
-    parsing_state.set_new_line_state();
+    // reset for a fresh check
+    '_reset_parsing_state: {
+        parsing_state.line_number += 1;
+        parsing_state.open_par_above = false;
+        parsing_state.lcpi_op = None;
+        parsing_state.deepest_quote = 0;
+        parsing_state.snmoqio = None;
+        parsing_state.open_block_id = ast.get_head_id();
+        parsing_state.dmgci = ast.get_head_id();
+    }
     let mut current_block_id = ast.get_head_id();
-    parsing_state.dmgci = ast.get_head_id();
     let mut ccs_still_satisfied = true;
     // println!("called ccc!");
     while let Some(next_block_id) = ast.get_last_child_id(current_block_id) {
@@ -216,7 +225,7 @@ fn check_tree_state(
                         }
                     }
                 }
-                List(_, _, _) => {
+                List(..) => {
                     parsing_state.open_block_id = current_block_id;
                 }
                 ListItem(continuable, indent_amount) => {
@@ -250,7 +259,7 @@ fn check_tree_state(
                 IndentedCodeBlock(_, _) => {
                     ccs_still_satisfied = false;
                     line_state.consume_indent_until_sfls_ge(4);
-                    if line_state.space_from_last_structure >= 4 || line_state.is_empty() {
+                    if dbg!(line_state.space_from_last_structure >= 4 || line_state.is_empty()) {
                         parsing_state.open_block_id = current_block_id;
                     }
                 }
@@ -378,6 +387,7 @@ fn block_quote_encountered(line_state: &mut LineState) -> bool {
     if line_state.consume_one_space() {
         line_state.space_from_last_structure -= 1;
     }
+    dbg!(&line_state);
     true
 }
 
@@ -490,7 +500,7 @@ fn html_start_encountered(
                 }
                 chars_seen += 1;
             }
-            dbg!(target_str);
+            // dbg!(target_str);
             chars_seen == target_str.len()
         })
     };
@@ -508,7 +518,6 @@ fn html_start_encountered(
                 }
                 chars_seen += 1;
             }
-            dbg!(target_str);
             chars_seen == target_str.len()
         })
     };
@@ -681,15 +690,13 @@ fn html_start_encountered(
     }
 }
 
+//TODO: ALL OF THIS
 fn close_paragraph(ast: &mut AbstractSyntaxTree<String>, parsing_state: &mut ParsingState) {
-    todo!();
-    // if !parsing_state.continuable_par_exists {
-    //     return;
-    // } //no paragraph to close, job done.
+    let Some(open_par_id) = parsing_state.lcpi_op else {
+        return;
+    };
+
     //
-    // let Paragraph(il, b @ true) = parsing_state.abstract_syntax_tree.get_last_block() else {
-    //     panic!()
-    // };
     //
     // let mut chars = BorrowedStringPCI::new(&il.string);
     //
@@ -775,6 +782,12 @@ fn close_paragraph(ast: &mut AbstractSyntaxTree<String>, parsing_state: &mut Par
     //
     // parsing_state.open_par_above = false;
     // parsing_state.continuable_par_exists = false;
+    let Paragraph(_, is_open @ true) = ast.get_block(open_par_id) else {
+        panic!()
+    };
+    *is_open = false;
+    parsing_state.lcpi_op = None;
+    parsing_state.open_par_above = false;
 }
 
 // #[cfg(test)]
@@ -1021,7 +1034,7 @@ fn create_new_block_starts(
     line_state: &mut LineState,
 ) {
     'blank_line: {
-        if dbg!(line_state.is_blank_line()) {
+        if (line_state.is_blank_line()) {
             let has_no_children = ast.has_no_children(parsing_state.open_block_id);
             match ast.get_block(parsing_state.open_block_id) {
                 IndentedCodeBlock(_, unrealized_blanks) => {
@@ -1061,7 +1074,7 @@ fn create_new_block_starts(
         }
     }
 
-    match ast.get_block(parsing_state.open_block_id) {
+    match (ast.get_block(parsing_state.open_block_id)) {
         IndentedCodeBlock(chars, spaces) => {
             // None Blank Line!
             chars.push_str(spaces);
@@ -1126,6 +1139,7 @@ fn create_new_block_starts(
         }
         _ => (),
     }
+
     // we do not want to consume more than 4 for the case that we are creating an indented code
     // block in which case we have to copy in those spaces
     // let mut pre_space_line = parsing_state.line_state.clone();
@@ -1200,35 +1214,30 @@ fn create_new_block_starts(
         if thematic_break_encountered(&mut thematic_break_line) {
             close_paragraph(ast, parsing_state);
             detighten_list(list_being_added_to_id_op, parsing_state, ast);
-            // if let Some(list_id) = list_being_added_to_id_op {
-            //     match ast.get_block(list_id) {
-            //         List(is_tight, _, _) => {
-            //             *is_tight = parsing_state
-            //                 .blank_line_depth
-            //                 .is_none_or(|d| d > ast.get_block_depth(list_id))
-            //                 && *is_tight;
-            //         }
-            //         _ => unreachable!(),
-            //     }
-            // }
             ast.add_new_node(parsing_state.dmgci, ThematicBreak);
             return;
         }
 
         //now check if we can add a new list item to an existing list
         let mut list_item_iter = line_state.clone();
-        if let List(_, existing_lt, ..) = ast.get_block(parsing_state.open_block_id)
-            && let Some((new_lt, li)) = list_item_encountered(&mut list_item_iter)
+        if let List(_, existing_lt, ..) = dbg!(ast.get_block(parsing_state.open_block_id))
+            && let Some((new_lt, li)) = dbg!(list_item_encountered(&mut list_item_iter))
             && existing_lt.same_list_eq(&new_lt)
         {
-            close_paragraph(ast, parsing_state);
             list_being_added_to_id_op = Some(parsing_state.open_block_id);
+            detighten_list(list_being_added_to_id_op, parsing_state, ast);
+            close_paragraph(ast, parsing_state);
             parsing_state.open_block_id = ast.add_new_node(parsing_state.open_block_id, li);
             parsing_state.dmgci = parsing_state.open_block_id;
+            *line_state = list_item_iter;
         }
 
+        let mut loop_iters = 0;
         // keep looking for new block starts
-        while line_state.space_from_last_structure <= 3 {
+        'look_for_new_block_starts: while line_state.space_from_last_structure <= 3 {
+            dbg!(&line_state);
+            dbg!(loop_iters);
+            loop_iters += 1;
             let mut them_break_iter = line_state.clone();
             if thematic_break_encountered(&mut them_break_iter) {
                 detighten_list(list_being_added_to_id_op, parsing_state, ast);
@@ -1251,10 +1260,11 @@ fn create_new_block_starts(
                 } //only ordered lists starting with 1 can interrupt paragraphs. and must be non
                 //empty afterwards
                 close_paragraph(ast, parsing_state);
-                parsing_state.open_block_id = ast.add_new_node(parsing_state.dmgci, b);
+                let list_node_id = ast.add_new_node(parsing_state.dmgci, List(true, lt));
+                parsing_state.open_block_id = ast.add_new_node(list_node_id, b);
                 parsing_state.dmgci = parsing_state.open_block_id;
                 *line_state = list_item_iter;
-                continue;
+                continue 'look_for_new_block_starts;
             }
 
             let mut block_quote_iter = line_state.clone();
@@ -1264,8 +1274,10 @@ fn create_new_block_starts(
                 parsing_state.open_block_id =
                     ast.add_new_node(parsing_state.dmgci, BlockQuote(true));
                 parsing_state.dmgci = parsing_state.open_block_id;
-                *line_state = list_item_iter;
-                continue;
+                *line_state = block_quote_iter;
+                line_state.consume_indent_until_sfls_ge(4);
+                dbg!(line_state.space_from_last_structure);
+                continue 'look_for_new_block_starts;
             }
 
             let mut fcb_iter = line_state.clone();

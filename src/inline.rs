@@ -964,8 +964,8 @@ fn process_emphasis<'a>(
     inline_str: &'a str,
 ) -> Vec<InlineContent<&'a str>> {
     // dbg!("processing emph");
-    dbg!(&stack);
-    dbg!(&stack_bottom);
+    // dbg!(&stack);
+    // dbg!(&stack_bottom);
     let mut current_index_op =
         stack_bottom.map_or(stack.initial_index, |i| stack.get(i).index_of_next);
     let stack_bottom_char_index =
