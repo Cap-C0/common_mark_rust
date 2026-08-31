@@ -115,7 +115,7 @@ pub enum InlineContent<T> {
 //     Dummy,
 // }
 
-impl<'a> InlineContent<&'a str> {
+impl InlineContent<&str> {
     pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
         match self {
             Softbreak => string_builder.push('\n'),
@@ -274,7 +274,7 @@ impl<'a> InlineContent<&'a str> {
         }
     }
 
-    pub fn to_alt_text(&self, string_array: &str, _string_builder: &mut String) {
+    pub fn to_alt_text(&self, _string_array: &str, _string_builder: &mut String) {
         match self {
             Softbreak => _string_builder.push('\n'),
             Hardbreak => _string_builder.push('\n'),
@@ -287,22 +287,22 @@ impl<'a> InlineContent<&'a str> {
             }
             Emph(inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(string_array, _string_builder);
+                    ic.to_alt_text(_string_array, _string_builder);
                 }
             }
             Strong(inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(string_array, _string_builder);
+                    ic.to_alt_text(_string_array, _string_builder);
                 }
             }
             InlineLink(.., inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(string_array, _string_builder);
+                    ic.to_alt_text(_string_array, _string_builder);
                 }
             }
             ReferenceLink(.., inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(string_array, _string_builder);
+                    ic.to_alt_text(_string_array, _string_builder);
                 }
             }
             AutoLink(link_string, ..) => {

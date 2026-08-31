@@ -9,6 +9,7 @@ use crate::ListType::*;
 use crate::ast_types::*;
 use crate::parsers::*;
 use crate::peekable_char_indices::*;
+use crate::string_normalize::normalize_label;
 
 pub type LRDTable = HashMap<String, (String, Option<String>)>;
 
@@ -20,7 +21,7 @@ pub fn create_block_structure(markdown: &str) -> (AbstractSyntaxTree<String>, LR
     let mut lines = lines_list.iter().peekable();
 
     let lrd_table = HashMap::new();
-    let mut tree: AbstractSyntaxTree<String> = AbstractSyntaxTree::new();
+    let mut tree: AbstractSyntaxTree<String> = AbstractSyntaxTree::default();
 
     if lines.peek().is_none() {
         return (tree, lrd_table);
@@ -43,8 +44,11 @@ pub fn create_block_structure(markdown: &str) -> (AbstractSyntaxTree<String>, LR
     for line in lines {
         let mut line_state = LineState::new(line);
         // dbg!(&parsing_state);
+        println!("==============================================");
+        dbg!(parsing_state.line_number);
         check_tree_state(&tree, &mut parsing_state, &mut Some(&mut line_state));
-        create_new_block_starts(&mut tree, &mut parsing_state, &mut line_state);
+        create_new_block_starts(&mut tree, &mut parsing_state, line_state);
+        dbg!(parsing_state.blank_line_depth);
         // dbg!(line);
     }
     // dbg!(&parsing_state);
@@ -77,19 +81,9 @@ struct ParsingState {
     line_number: usize,
 }
 
-impl ParsingState {
-    fn set_new_line_state(&mut self, document_head: NodeId) {
-        self.line_number += 1;
-        self.open_par_above = false;
-        self.lcpi_op = None;
-        self.deepest_quote = 0;
-        self.snmoqio = None;
-        self.open_block_id = document_head;
-    }
-}
-
 #[derive(Debug, Clone)]
 struct LineState<'a> {
+    base_line: &'a str,
     char_iter: BorrowedStringPCI<'a>,
     effective_column_number: usize,
     space_from_last_structure: usize,
@@ -99,11 +93,17 @@ impl<'a> Iterator for LineState<'a> {
     type Item = char;
 
     fn next(&mut self) -> Option<char> {
-        let out = self.char_iter.next()?;
-        if out == '\t' {
+        self.next_and_index().map(|(_, c)| c)
+    }
+}
+
+impl<'a> PeekableCharIndices<usize> for LineState<'a> {
+    fn next_and_index(&mut self) -> Option<(usize, char)> {
+        let out = self.char_iter.next_and_index()?;
+        if out.1 == '\t' {
             self.space_from_last_structure += 4 - (self.effective_column_number % 4);
             self.effective_column_number += 4 - (self.effective_column_number % 4);
-        } else if out == ' ' {
+        } else if out.1 == ' ' {
             self.space_from_last_structure += 1;
             self.effective_column_number += 1;
         } else {
@@ -112,12 +112,6 @@ impl<'a> Iterator for LineState<'a> {
         }
         // dbg!(&self);
         Some(out)
-    }
-}
-
-impl<'a> PeekableCharIndices<usize> for LineState<'a> {
-    fn next_and_index(&mut self) -> Option<(usize, char)> {
-        self.char_iter.next_and_index()
     }
     fn peek_and_index(&mut self) -> Option<(usize, char)> {
         self.char_iter.peek_and_index()
@@ -131,6 +125,7 @@ impl<'a> PeekableCharIndices<usize> for LineState<'a> {
 impl<'a> LineState<'a> {
     fn new(line_in: &'a str) -> Self {
         LineState {
+            base_line: line_in,
             char_iter: line_in.into(),
             effective_column_number: 0,
             space_from_last_structure: 0,
@@ -155,6 +150,10 @@ impl<'a> LineState<'a> {
         let mut self_clone = self.clone();
         self_clone.consume_indent();
         self_clone.is_empty()
+    }
+
+    fn get_remaining_str(&self) -> &'a str {
+        &self.base_line[self.offset()..]
     }
 }
 
@@ -203,6 +202,7 @@ fn check_tree_state(
     // println!("called ccc!");
     while let Some(next_block_id) = ast.get_last_child_id(current_block_id) {
         current_block_id = next_block_id;
+        // dbg!(ast.get_block_ref(current_block_id));
         // as deref mut, very demur
         if let Some(line_state) = line_state_op.as_deref_mut()
             && ccs_still_satisfied
@@ -222,6 +222,11 @@ fn check_tree_state(
                             parsing_state.open_block_id = current_block_id;
                             parsing_state.deepest_quote = ast.get_block_depth(current_block_id);
                             parsing_state.dmgci = current_block_id;
+                        } else {
+                            ccs_still_satisfied = false;
+                            if parsing_state.snmoqio.is_none() {
+                                parsing_state.snmoqio = Some(current_block_id);
+                            }
                         }
                     }
                 }
@@ -690,102 +695,100 @@ fn html_start_encountered(
     }
 }
 
-//TODO: ALL OF THIS
 fn close_paragraph(ast: &mut AbstractSyntaxTree<String>, parsing_state: &mut ParsingState) {
     let Some(open_par_id) = parsing_state.lcpi_op else {
         return;
     };
 
+    let Paragraph(inline, is_open @ true) = ast.get_block(open_par_id) else {
+        panic!()
+    };
+    *is_open = false;
+
+    let mut chars = BorrowedStringPCI::new(inline);
     //
+    'collect_lrds: loop {
+        let mut current_iteration_iter = chars.clone();
+
+        // let mut link_lab_iter_start = current_iteration_iter.clone();
+
+        let Some(link_lab_range) = parse_link_label(&mut current_iteration_iter) else {
+            break 'collect_lrds;
+        };
+        // let link_lab_end_char_index = current_iteration_iter.offset();
+
+        // dbg!(&current_iteration_iter);
+        if current_iteration_iter.next_if_char_eq(':').is_none() {
+            break 'collect_lrds;
+        }
+
+        //optional spaces or tabs
+        current_iteration_iter.consume_while(|c| " \t\n".contains(c));
+
+        let Some(link_dest_range) = parse_link_destination(&mut current_iteration_iter) else {
+            break 'collect_lrds;
+        };
+
+        let offset_before_spaces = current_iteration_iter.offset();
+        current_iteration_iter.consume_while(|c| " \t".contains(c));
+
+        let is_valid_lrd = current_iteration_iter.next_if_char_eq('\n').is_some()
+            || current_iteration_iter.is_empty();
+
+        // the way we created paragraphs means that pre_whitespace in line is already stripped
+        // so !c.is_whitespace() is true for all c that follow an \n
+        // let mut link_title_iter_start = current_iteration_iter.clone();
+        let mut find_link_title_iter = current_iteration_iter.clone();
+
+        if current_iteration_iter.offset() > offset_before_spaces
+            && let Some(link_title_range) = dbg!(parse_link_title(&mut find_link_title_iter))
+            && {
+                find_link_title_iter.consume_while(|c| " \t".contains(c));
+                match find_link_title_iter.peek() {
+                    Some('\n') | None => {
+                        find_link_title_iter.next();
+                        true
+                    }
+                    _ => false,
+                }
+            }
+        {
+            parsing_state
+                .lrd_table
+                .entry(dbg!(normalize_label(
+                    // &(link_lab_iter_start.collect_until_offset(link_label_end)),
+                    &inline[link_lab_range]
+                )))
+                .or_insert((
+                    (&inline[link_dest_range]).into(),
+                    if link_title_range.start != link_title_range.end {
+                        Some((&inline[link_title_range]).into())
+                    } else {
+                        None
+                    }, // link_dest_iter_start.collect_until_offset(link_dest_end),
+                       // Some(link_title_iter_start.collect_until_offset(link_title_offset)),
+                ));
+            chars = find_link_title_iter;
+            continue 'collect_lrds;
+        } else if is_valid_lrd {
+            parsing_state
+                .lrd_table
+                .entry(normalize_label(&inline[link_lab_range]))
+                .or_insert(((&inline[link_dest_range]).into(), None));
+            chars = current_iteration_iter;
+            continue 'collect_lrds;
+        };
+        break 'collect_lrds;
+    }
     //
-    // let mut chars = BorrowedStringPCI::new(&il.string);
-    //
-    // 'collect_lrds: loop {
-    //     let mut current_iteration_iter = chars.clone();
-    //
-    //     // let mut link_lab_iter_start = current_iteration_iter.clone();
-    //
-    //     let Some(link_lab_range) = dbg!(parse_link_label(&mut current_iteration_iter)) else {
-    //         break 'collect_lrds;
-    //     };
-    //     // let link_lab_end_char_index = current_iteration_iter.offset();
-    //
-    //     // dbg!(&current_iteration_iter);
-    //     if current_iteration_iter.next_if_char_eq(':').is_none() {
-    //         break 'collect_lrds;
-    //     }
-    //
-    //     //optional spaces or tabs
-    //     current_iteration_iter.consume_while(|c| " \t\n".contains(c));
-    //
-    //     let Some(link_dest_range) = parse_link_destination(&mut current_iteration_iter) else {
-    //         break 'collect_lrds;
-    //     };
-    //
-    //     let offset_before_spaces = current_iteration_iter.offset();
-    //     current_iteration_iter.consume_while(|c| " \t".contains(c));
-    //
-    //     let is_valid_lrd = current_iteration_iter.next_if_char_eq('\n').is_some()
-    //         || current_iteration_iter.is_empty();
-    //
-    //     // the way we created paragraphs means that pre_whitespace in line is already stripped
-    //     // so !c.is_whitespace() is true for all c that follow an \n
-    //     // let mut link_title_iter_start = current_iteration_iter.clone();
-    //     let mut find_link_title_iter = current_iteration_iter.clone();
-    //
-    //     if current_iteration_iter.offset() > offset_before_spaces
-    //         && let Some(link_title_range) = dbg!(parse_link_title(&mut find_link_title_iter))
-    //         && {
-    //             find_link_title_iter.consume_while(|c| " \t".contains(c));
-    //             match find_link_title_iter.peek() {
-    //                 Some('\n') | None => {
-    //                     find_link_title_iter.next();
-    //                     true
-    //                 }
-    //                 _ => false,
-    //             }
-    //         }
-    //     {
-    //         parsing_state
-    //             .lrd_table
-    //             .entry(dbg!(normalize_label(
-    //                 // &(link_lab_iter_start.collect_until_offset(link_label_end)),
-    //                 &il.string[link_lab_range]
-    //             )))
-    //             .or_insert((
-    //                 (&il.string[link_dest_range]).into(),
-    //                 if link_title_range.start != link_title_range.end {
-    //                     Some((&il.string[link_title_range]).into())
-    //                 } else {
-    //                     None
-    //                 }, // link_dest_iter_start.collect_until_offset(link_dest_end),
-    //                    // Some(link_title_iter_start.collect_until_offset(link_title_offset)),
-    //             ));
-    //         chars = find_link_title_iter;
-    //         continue 'collect_lrds;
-    //     } else if is_valid_lrd {
-    //         parsing_state
-    //             .lrd_table
-    //             .entry(normalize_label(&il.string[link_lab_range]))
-    //             .or_insert(((&il.string[link_dest_range]).into(), None));
-    //         chars = current_iteration_iter;
-    //         continue 'collect_lrds;
-    //     };
-    //     break 'collect_lrds;
-    // }
-    //
-    // if chars.offset() > 0 {
-    //     let mut new_str = chars.collect();
-    //     mem::swap(&mut new_str, &mut il.string);
-    // }
+    if chars.offset() > 0 {
+        let mut new_str = chars.collect();
+        mem::swap(&mut new_str, inline);
+    }
     // *b = false;
     //
     // parsing_state.open_par_above = false;
     // parsing_state.continuable_par_exists = false;
-    let Paragraph(_, is_open @ true) = ast.get_block(open_par_id) else {
-        panic!()
-    };
-    *is_open = false;
     parsing_state.lcpi_op = None;
     parsing_state.open_par_above = false;
 }
@@ -1031,10 +1034,10 @@ fn close_paragraph(ast: &mut AbstractSyntaxTree<String>, parsing_state: &mut Par
 fn create_new_block_starts(
     ast: &mut AbstractSyntaxTree<String>,
     parsing_state: &mut ParsingState,
-    line_state: &mut LineState,
+    mut line_state: LineState,
 ) {
     'blank_line: {
-        if (line_state.is_blank_line()) {
+        if line_state.is_blank_line() {
             let has_no_children = ast.has_no_children(parsing_state.open_block_id);
             match ast.get_block(parsing_state.open_block_id) {
                 IndentedCodeBlock(_, unrealized_blanks) => {
@@ -1074,7 +1077,7 @@ fn create_new_block_starts(
         }
     }
 
-    match (ast.get_block(parsing_state.open_block_id)) {
+    match ast.get_block(parsing_state.open_block_id) {
         IndentedCodeBlock(chars, spaces) => {
             // None Blank Line!
             chars.push_str(spaces);
@@ -1088,9 +1091,7 @@ fn create_new_block_starts(
                     chars.push(' ');
                 }
             }
-            for c in line_state {
-                chars.push(c);
-            }
+            chars.push_str(line_state.get_remaining_str());
             return;
         }
         FencedCodeBlock(chars, is_open @ true, marker, _, indent_count, marker_count) => {
@@ -1113,9 +1114,7 @@ fn create_new_block_starts(
                     chars.push(' ');
                 }
             }
-            for c in line_state {
-                chars.push(c);
-            }
+            chars.push_str(line_state.get_remaining_str());
             chars.push('\n');
 
             return;
@@ -1146,14 +1145,16 @@ fn create_new_block_starts(
     line_state.consume_indent_until_sfls_ge(4);
     // obd is unmodified at this point, since we know we are not in a blank line at  this point,
     // that means that *something* will eventually get added to list item
-    let mut list_being_added_to_id_op: Option<NodeId> = if matches!(
-        *ast.get_block_ref(parsing_state.open_block_id),
-        ListItem(..)
-    ) {
-        ast.get_parent_id(parsing_state.open_block_id)
-    } else {
-        None
-    };
+    // dbg!(parsing_state.open_block_id);
+    // dbg!(&ast);
+    // dbg!(ast.get_block_ref(parsing_state.open_block_id));
+    let mut list_being_added_to_id_op: Option<NodeId> =
+        if matches!(*ast.get_block_ref(parsing_state.dmgci), ListItem(..)) {
+            dbg!(ast.get_parent_id(parsing_state.dmgci))
+        } else {
+            None
+        };
+    dbg!(&list_being_added_to_id_op);
 
     let detighten_list = |list_being_added_to_id_op: Option<NodeId>,
                           parsing_state: &mut ParsingState,
@@ -1167,6 +1168,7 @@ fn create_new_block_starts(
                     .is_none_or(|d| block_depth < d);
             }
         }
+        parsing_state.blank_line_depth = None;
     };
 
     if line_state.space_from_last_structure <= 3 {
@@ -1220,8 +1222,8 @@ fn create_new_block_starts(
 
         //now check if we can add a new list item to an existing list
         let mut list_item_iter = line_state.clone();
-        if let List(_, existing_lt, ..) = dbg!(ast.get_block(parsing_state.open_block_id))
-            && let Some((new_lt, li)) = dbg!(list_item_encountered(&mut list_item_iter))
+        if let List(_, existing_lt, ..) = (ast.get_block(parsing_state.open_block_id))
+            && let Some((new_lt, li)) = (list_item_encountered(&mut list_item_iter))
             && existing_lt.same_list_eq(&new_lt)
         {
             list_being_added_to_id_op = Some(parsing_state.open_block_id);
@@ -1229,15 +1231,11 @@ fn create_new_block_starts(
             close_paragraph(ast, parsing_state);
             parsing_state.open_block_id = ast.add_new_node(parsing_state.open_block_id, li);
             parsing_state.dmgci = parsing_state.open_block_id;
-            *line_state = list_item_iter;
+            line_state = list_item_iter;
         }
 
-        let mut loop_iters = 0;
         // keep looking for new block starts
         'look_for_new_block_starts: while line_state.space_from_last_structure <= 3 {
-            dbg!(&line_state);
-            dbg!(loop_iters);
-            loop_iters += 1;
             let mut them_break_iter = line_state.clone();
             if thematic_break_encountered(&mut them_break_iter) {
                 detighten_list(list_being_added_to_id_op, parsing_state, ast);
@@ -1263,7 +1261,8 @@ fn create_new_block_starts(
                 let list_node_id = ast.add_new_node(parsing_state.dmgci, List(true, lt));
                 parsing_state.open_block_id = ast.add_new_node(list_node_id, b);
                 parsing_state.dmgci = parsing_state.open_block_id;
-                *line_state = list_item_iter;
+                line_state = list_item_iter;
+                line_state.consume_indent_until_sfls_ge(4);
                 continue 'look_for_new_block_starts;
             }
 
@@ -1274,9 +1273,9 @@ fn create_new_block_starts(
                 parsing_state.open_block_id =
                     ast.add_new_node(parsing_state.dmgci, BlockQuote(true));
                 parsing_state.dmgci = parsing_state.open_block_id;
-                *line_state = block_quote_iter;
+                line_state = block_quote_iter;
                 line_state.consume_indent_until_sfls_ge(4);
-                dbg!(line_state.space_from_last_structure);
+                // dbg!(line_state.space_from_last_structure);
                 continue 'look_for_new_block_starts;
             }
 
@@ -1327,9 +1326,7 @@ fn create_new_block_starts(
     {
         inline.push('\n');
         line_state.consume_indent();
-        for c in line_state {
-            inline.push(c);
-        }
+        inline.push_str(line_state.get_remaining_str());
         return;
     }
     // if let Paragraph(inline, true) = parsing_state.abstract_syntax_tree.get_last_block() {
@@ -1349,9 +1346,7 @@ fn create_new_block_starts(
         for _ in 0..line_state.space_from_last_structure - 4 {
             str_out.push(' ');
         }
-        for c in line_state {
-            str_out.push(c);
-        }
+        str_out.push_str(line_state.get_remaining_str());
         ast.add_new_node(
             parsing_state.dmgci,
             IndentedCodeBlock(str_out, String::new()),

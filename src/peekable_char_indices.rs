@@ -35,7 +35,7 @@ pub trait PeekableCharIndices<Offset>: Iterator<Item = char> + Clone {
     }
 }
 
-fn next_if_helper<S, T: PeekableCharIndices<S> + ?Sized>(
+fn next_if_helper<S, T: PeekableCharIndices<S>>(
     iter: &mut T,
     func: &impl Fn(char) -> bool,
 ) -> Option<char> {

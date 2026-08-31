@@ -1,10 +1,11 @@
 use core::fmt;
+use std::option::Option::{None as Leaf, Some as Container};
 
 use crate::{
-    ast_types::{Block::*, BlockKind::*, ListType::*},
+    ast_types::{Block::*, ListType::*},
     block_structure::LRDTable,
     chars::{push_chars_with_entities_and_bs, push_html_reserved_char},
-    inline::{Inline, LeafContainerInline, inline_string_to_html},
+    inline::LeafContainerInline,
     peekable_char_indices::BorrowedStringPCI,
 };
 
@@ -18,11 +19,14 @@ pub struct AbstractSyntaxTree<T> {
     head: NodeId,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum BlockKind {
-    Leaf,
-    Container(Vec<NodeId>),
-}
+//this is just an Option<Vec<NodeId>>
+// #[derive(Debug, PartialEq, Eq)]
+// enum BlockKind {
+//     Leaf,
+//     Container(Vec<NodeId>),
+// }
+
+type BlockKind = Option<Vec<NodeId>>;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Node<T> {
@@ -53,7 +57,7 @@ pub enum Block<T> {
 
 impl<T: fmt::Debug> fmt::Debug for AbstractSyntaxTree<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "")?;
+        writeln!(f)?;
         self.fmt_helper(f, self.head, 0)
     }
 }
@@ -65,11 +69,11 @@ impl<T: fmt::Debug> AbstractSyntaxTree<T> {
         current_node_id: NodeId,
         depth: usize,
     ) -> fmt::Result {
-        let child_op = if let Container(ref children) = self.nodes[current_node_id.0].block_kind {
-            Some(children)
-        } else {
-            None
-        };
+        // let _child_op = if let Container(ref children) = self.nodes[current_node_id.0].block_kind {
+        //     Some(children)
+        // } else {
+        //     None
+        // };
         let indent = "  ".repeat(depth);
         writeln!(
             f,
@@ -77,19 +81,21 @@ impl<T: fmt::Debug> AbstractSyntaxTree<T> {
             indent, current_node_id, self.nodes[current_node_id.0].block
         )?;
 
-        match self.nodes[current_node_id.0].block_kind {
-            Container(ref children_id) => {
-                for child_id in children_id {
-                    self.fmt_helper(f, *child_id, depth + 1)?;
-                }
+        if let Container(ref children_id) = self.nodes[current_node_id.0].block_kind {
+            for child_id in children_id {
+                self.fmt_helper(f, *child_id, depth + 1)?;
             }
-            _ => (),
         }
 
         Ok(())
     }
 }
 
+impl<T: LeafContainerInline> Default for AbstractSyntaxTree<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
     pub fn new() -> Self {
         AbstractSyntaxTree {
@@ -117,18 +123,17 @@ impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
             depth: parent_depth + 1,
             parent_id: Some(parent),
         });
-        let Container(ref mut children) = self.nodes[parent.0].block_kind else {
-            panic!("The parent of a block *must* be a container")
-        };
+        let children = self.nodes[parent.0].block_kind.as_mut().unwrap();
         children.push(child_id);
         child_id
     }
 
     pub fn get_last_child_id(&self, parent: NodeId) -> Option<NodeId> {
-        match self.nodes[parent.0].block_kind {
-            Leaf => None,
-            Container(ref child_ids) => child_ids.last().copied(),
-        }
+        self.nodes[parent.0].block_kind.as_ref()?.last().copied()
+        // match self.nodes[parent.0].block_kind {
+        //     Leaf => None,
+        //     Container(ref child_ids) => child_ids.last().copied(),
+        // }
     }
 
     pub fn get_block(&mut self, node_id: NodeId) -> &mut Block<T> {
@@ -187,7 +192,7 @@ impl AbstractSyntaxTree<String> {
         } else {
             None
         };
-        match (&self.nodes[current_node.0].block) {
+        match &self.nodes[current_node.0].block {
             Document => {
                 for node_id in child_op.unwrap() {
                     self.to_html_helper(*node_id, false, string_builder, lrd_table);
@@ -207,7 +212,7 @@ impl AbstractSyntaxTree<String> {
                 if !string_builder.is_empty() && !string_builder.ends_with('\n') {
                     string_builder.push('\n');
                 }
-                match dbg!(list_type) {
+                match list_type {
                     OrderedList(_, n) => {
                         if *n != 1 {
                             string_builder.push_str(&format!("<ol start=\"{}\">\n", n));

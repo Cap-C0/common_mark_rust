@@ -1,10 +1,6 @@
 //!  The contract for calling parsers is generally like so:
 //!  - the callee can modify the incoming iterator whether it succeeds or fails. This means that it is
 //!    the callers responsibility to clone the iterator and "backtrack" in the case of failure.
-//!  - Parsers generally return the char_index *after* the last relevant character, along with
-//!    in some cases extra information for callee (ie, is the info wrapped in delimiters.)
-//!  TODO: MAKE THE CALLEES RESPONSIBLE FOR RETURNING VALID OFFSET RANGES, NO FURTHER
-//!  ARITHMETIC/MODIFICATIONS NEEDED.
 use std::ops::Range;
 
 use crate::{

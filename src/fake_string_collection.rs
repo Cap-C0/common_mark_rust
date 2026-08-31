@@ -43,7 +43,7 @@ pub struct FakeStringCollection<'a> {
 }
 
 impl<'a> FakeStringCollection<'a> {
-    pub fn to_peekable_iter(&self) -> FakeStringIterator {
+    pub fn to_peekable_iter(&self) -> FakeStringIterator<'_> {
         FakeStringIterator {
             current_iter: self.lines[0].into(),
             base_collection: self,
