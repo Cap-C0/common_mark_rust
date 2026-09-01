@@ -97,7 +97,8 @@ impl<'a> Iterator for LineState<'a> {
     }
 }
 
-impl<'a> PeekableCharIndices<usize> for LineState<'a> {
+impl<'a> PeekableCharIndices for LineState<'a> {
+    type Offset = usize;
     fn next_and_index(&mut self) -> Option<(usize, char)> {
         let out = self.char_iter.next_and_index()?;
         if out.1 == '\t' {

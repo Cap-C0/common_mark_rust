@@ -1,50 +1,42 @@
 use crate::block_structure::LRDTable;
 use crate::chars::*;
+use crate::fake_dll::*;
 use crate::inline::InlineContent::InlineLink;
 use crate::inline::InlineContent::*;
-use crate::inline::InlineTextComponent::*;
+use crate::inline::InlineStructureDelimiters::*;
 use crate::parsers::ReferenceLinkType::Collapsed;
 use crate::parsers::ReferenceLinkType::Full;
 use crate::parsers::*;
 use crate::peekable_char_indices::*;
 use crate::string_normalize::normalize_label;
-use std::{mem, vec};
+use std::fmt::Debug;
+use std::ops::{Add, Range};
+use std::vec;
 
 include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 
-#[derive(Debug, PartialEq, Eq, Clone, Default)]
-pub struct Inline {
-    pub string: String,
-}
-
-impl Inline {
-    pub fn new(str_in: String) -> Self {
-        Inline {
-            // chars: vec![],
-            string: str_in,
-        }
-    }
-
-    // pub fn fill_content(&mut self, lrd_table: &LRDTable) {
-    //     // dbg!("called_fill_content");
-    //     assert!(self.content.is_empty());
-    //     self.content = parse_inline(&self.string, lrd_table)
-    // }
-
-    pub fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable) {
-        for ic in parse_inline(&self.string, lrd_table) {
-            ic.to_html(&self.string, string_builder, lrd_table);
-        }
-    }
-}
+pub trait CharsInRange: Iterator<Item = char> + Clone {}
+impl<T: Iterator<Item = char> + Clone> CharsInRange for T {}
 
 pub trait LeafContainerInline {
+    type Offset;
+    type Chars<'a>: PeekableCharIndices<Offset = Self::Offset>
+    where
+        Self: 'a;
+
     fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable);
     fn is_empty(&self) -> bool;
     fn char_iter(&self) -> impl Iterator<Item = char>;
+    fn as_pci(&self) -> impl PeekableCharIndices<Offset = Self::Offset>;
+    fn chars_in_range<'a>(&'a self, range: Range<Self::Offset>) -> Self::Chars<'a>;
 }
 
 impl LeafContainerInline for String {
+    type Offset = usize;
+    type Chars<'a>
+        = BorrowedStringPCI<'a>
+    where
+        Self: 'a;
     fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable) {
         for ic in parse_inline(self, lrd_table) {
             ic.to_html(self, string_builder, lrd_table);
@@ -56,18 +48,26 @@ impl LeafContainerInline for String {
     fn char_iter(&self) -> impl Iterator<Item = char> {
         self.chars()
     }
-}
 
-pub fn inline_string_to_html(str_in: &str, string_builder: &mut String, lrd_table: &LRDTable) {
-    for ic in parse_inline(str_in, lrd_table) {
-        ic.to_html(str_in, string_builder, lrd_table);
+    fn as_pci(&self) -> impl PeekableCharIndices<Offset = Self::Offset> {
+        BorrowedStringPCI::new(self)
+    }
+
+    fn chars_in_range<'a>(&'a self, range: Range<Self::Offset>) -> Self::Chars<'a> {
+        BorrowedStringPCI::new(&self[range])
     }
 }
+
+// pub fn inline_string_to_html(str_in: &str, string_builder: &mut String, lrd_table: &LRDTable) {
+//     for ic in parse_inline(str_in, lrd_table) {
+//         ic.to_html(str_in, string_builder, lrd_table);
+//     }
+// }
 
 // we do not need to enforce multiple new line requirements in these parsers as that will be enforced
 // by paragraphs ending at new lines
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum InlineContent<T> {
+pub enum InlineContent<T: PeekableCharIndices> {
     Softbreak,
     Hardbreak,
     Text(T),
@@ -88,44 +88,17 @@ pub enum InlineContent<T> {
     Dummy,
 }
 
-// #[derive(Debug, PartialEq, Eq, Clone)]
-// pub enum InlineContent<'a> {
-//     Softbreak,
-//     Hardbreak,
-//     Text(&'a str),
-//     Emph(Vec<InlineContent<'a>>),
-//     Strong(Vec<InlineContent<'a>>),
-//     /// is_image, href, title, link_text
-//     //TODO: make this work with reference links
-//     InlineLink(
-//         bool,
-//         Option<&'a str>,
-//         Option<&'a str>,
-//         Vec<InlineContent<'a>>,
-//     ),
-//     ReferenceLink(bool, String, Vec<InlineContent<'a>>),
-//     /// src, title, link_text
-//     // Image((usize, usize), (usize, usize), Vec<InlineContent>),
-//     /// href and text, is_email
-//     AutoLink(&'a str, bool),
-//     /// start, end char index (exclusive)
-//     HTMLTag(&'a str),
-//     Code(&'a str),
-//     // for use when swapping memory
-//     Dummy,
-// }
-
-impl InlineContent<&str> {
+impl<T> InlineContent<T>
+where
+    T: PeekableCharIndices,
+    T::Offset: Ord,
+{
     pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
         match self {
             Softbreak => string_builder.push('\n'),
             Hardbreak => string_builder.push_str("<br />\n"),
-            Text(string) => {
-                push_chars_with_entities_and_bs(
-                    &BorrowedStringPCI::new(string),
-                    string_builder,
-                    false,
-                );
+            Text(chars) => {
+                push_chars_with_entities_and_bs(chars, string_builder, false);
             }
             Emph(inline_contents) => {
                 string_builder.push_str("<em>");
@@ -144,45 +117,29 @@ impl InlineContent<&str> {
             InlineLink(is_image, dest_op, tit_op, inline_contents) => {
                 if *is_image {
                     string_builder.push_str("<img src=\"");
-                    if let Some(dest_string) = dest_op {
-                        push_chars_with_entities_and_bs(
-                            &BorrowedStringPCI::new(dest_string),
-                            string_builder,
-                            true,
-                        );
+                    if let Some(dest_chars) = dest_op {
+                        push_chars_with_entities_and_bs(dest_chars, string_builder, true);
                     }
                     string_builder.push_str("\" alt=\"");
                     for ic in inline_contents {
                         ic.to_alt_text(string_array, string_builder);
                     }
                     string_builder.push_str("\" ");
-                    if let Some(tit_string) = tit_op {
+                    if let Some(tit_chars) = tit_op {
                         string_builder.push_str("title=\"");
-                        push_chars_with_entities_and_bs(
-                            &BorrowedStringPCI::new(tit_string),
-                            string_builder,
-                            false,
-                        );
+                        push_chars_with_entities_and_bs(tit_chars, string_builder, false);
                         string_builder.push_str("\" ");
                     }
                     string_builder.push_str("/>");
                 } else {
                     string_builder.push_str("<a href=\"");
-                    if let Some(dest_string) = dest_op {
-                        push_chars_with_entities_and_bs(
-                            &BorrowedStringPCI::new(dest_string),
-                            string_builder,
-                            true,
-                        );
+                    if let Some(dest_chars) = dest_op {
+                        push_chars_with_entities_and_bs(dest_chars, string_builder, true);
                     }
                     string_builder.push('\"');
-                    if let Some(tit_string) = tit_op {
+                    if let Some(tit_chars) = tit_op {
                         string_builder.push_str(" title=\"");
-                        push_chars_with_entities_and_bs(
-                            &BorrowedStringPCI::new(tit_string),
-                            string_builder,
-                            false,
-                        );
+                        push_chars_with_entities_and_bs(tit_chars, string_builder, false);
                         string_builder.push('\"');
                     }
                     string_builder.push('>');
@@ -240,28 +197,28 @@ impl InlineContent<&str> {
                     string_builder.push_str("</a>");
                 }
             }
-            AutoLink(link_string, is_email) => {
+            AutoLink(link_chars, is_email) => {
                 string_builder.push_str("<a href=\"");
                 if *is_email {
                     string_builder.push_str("mailto:");
                 }
-                for c in link_string.chars() {
+                for c in link_chars.clone() {
                     push_character_in_uri(c, string_builder);
                 }
                 string_builder.push_str("\">");
-                for c in link_string.chars() {
+                for c in link_chars.clone() {
                     push_html_reserved_char(c, string_builder);
                 }
                 string_builder.push_str("</a>");
             }
-            HTMLTag(html_string) => {
-                for c in html_string.chars() {
+            HTMLTag(html_chars) => {
+                for c in html_chars.clone() {
                     string_builder.push(c);
                 }
             }
-            Code(code_string) => {
+            Code(code_chars) => {
                 string_builder.push_str("<code>");
-                for c in code_string.chars() {
+                for c in code_chars.clone() {
                     if c == '\n' {
                         push_html_reserved_char(' ', string_builder);
                     } else {
@@ -278,12 +235,8 @@ impl InlineContent<&str> {
         match self {
             Softbreak => _string_builder.push('\n'),
             Hardbreak => _string_builder.push('\n'),
-            Text(text_string) => {
-                push_chars_with_entities_and_bs(
-                    &BorrowedStringPCI::new(text_string),
-                    _string_builder,
-                    false,
-                );
+            Text(text_chars) => {
+                push_chars_with_entities_and_bs(text_chars, _string_builder, false);
             }
             Emph(inline_contents) => {
                 for ic in inline_contents {
@@ -305,18 +258,18 @@ impl InlineContent<&str> {
                     ic.to_alt_text(_string_array, _string_builder);
                 }
             }
-            AutoLink(link_string, ..) => {
-                for c in link_string.chars() {
+            AutoLink(link_chars, ..) => {
+                for c in link_chars.clone() {
                     push_html_reserved_char(c, _string_builder);
                 }
             }
-            HTMLTag(html_string) => {
-                for c in html_string.chars() {
+            HTMLTag(html_chars) => {
+                for c in html_chars.clone() {
                     _string_builder.push(c);
                 }
             }
-            Code(code_string) => {
-                for c in code_string.chars() {
+            Code(code_chars) => {
+                for c in code_chars.clone() {
                     if c == '\n' {
                         push_html_reserved_char(' ', _string_builder);
                     } else {
@@ -330,7 +283,7 @@ impl InlineContent<&str> {
 }
 
 #[derive(Debug, Clone)]
-enum InlineTextComponent<T> {
+enum InlineStructureDelimiters<T: PeekableCharIndices> {
     /// Total_count,Count_consumed, potential_opener, potential_closer
     Asts(usize, usize, bool, bool),
     /// Total_count,Count_consumed, potential_opener, potential_closer
@@ -341,294 +294,130 @@ enum InlineTextComponent<T> {
     BrackClose,
     /// Total_count
     /// Offset to last char (exclusive)
-    TextualContent(usize),
+    TextualContent(Range<T::Offset>),
     CompletedContent(InlineContent<T>),
 }
 
-impl<T> InlineTextComponent<T> {
-    fn convert_to_completed_content(&mut self) {
+impl<T> InlineStructureDelimiters<T>
+where
+    T: PeekableCharIndices,
+    T::Offset: Add<usize, Output = T::Offset> + Ord + Clone,
+{
+    fn convert_to_completed_content(&mut self, start_index: T::Offset) {
         if matches!(self, TextualContent(..) | CompletedContent(..)) {
             return;
         }
         *self = match self {
             Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
-                TextualContent(*total - *consumed)
+                TextualContent(start_index.clone()..(start_index + (*total - *consumed)))
             }
-            ImgOpen(..) => TextualContent(2),
-            _ => TextualContent(1),
+            ImgOpen(..) => TextualContent(start_index.clone()..(start_index + 2)),
+            _ => TextualContent(start_index.clone()..(start_index + 1)),
         }
     }
-    // fn to_text_comp(self) -> InlineTextComponent {
-    //     match self {
-    //         Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
-    //             TextualContent(total - consumed)
-    //         }
-    //         ImgOpen(..) => TextualContent(2),
-    //         TextualContent(count) => TextualContent(*count),
-    //         CompletedContent(ic) => {
-    //             let mut new_ic = InlineContent::Dummy;
-    //             mem::swap(&mut new_ic, ic);
-    //             CompletedContent(new_ic)
-    //         }
-    //         _ => TextualContent(1),
-    //     }
-    // }
-    //TODO: make these "to_" functions take ownership
-}
-impl<'a> InlineTextComponent<&'a str> {
-    fn convert_to_inline_content(
-        &mut self,
-        char_offset: usize,
-        base_string: &'a str,
-    ) -> InlineContent<&'a str> {
+
+    fn to_inline_content<'a>(
+        self,
+        char_offset: T::Offset,
+        // base_string: &'a str,
+        base_container: &'a impl LeafContainerInline<Offset = T::Offset, Chars<'a> = T>,
+    ) -> InlineContent<T> {
         match self {
-            Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
-                Text(&base_string[char_offset..char_offset + (*total - *consumed)])
+            Unds(total, consumed, ..) | Asts(total, consumed, ..) => Text(
+                base_container
+                    .chars_in_range(char_offset.clone()..(char_offset + (total - consumed))),
+            ),
+            TextualContent(range) => Text(base_container.chars_in_range(range)),
+            ImgOpen(..) => {
+                Text(base_container.chars_in_range(char_offset.clone()..(char_offset + 2)))
             }
-            TextualContent(count) => Text(&base_string[char_offset..char_offset + *count]),
-            ImgOpen(..) => Text(&base_string[char_offset..char_offset + 2]),
-            CompletedContent(c) => {
-                let mut dummy = Dummy;
-                mem::swap(c, &mut dummy);
-                dummy
-            }
-            _ => Text(&base_string[char_offset..char_offset + 1]),
+            CompletedContent(c) => c,
+            _ => Text(base_container.chars_in_range(char_offset.clone()..(char_offset + 2))),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-struct DLLnode<T> {
-    //this indexes into the string at the start of a char, the design of the program should
-    //guarantee that this doesnt panic. Namely by only considering usizes that come
-    //immediately from a char_indices() and only subtracting from that offset when the character before that is known.
-    beginning_char_index: usize,
-    inline_component: InlineTextComponent<T>,
-    index_of_prev: Option<usize>,
-    index_of_next: Option<usize>,
-    index_of_this: usize, // this is helpful for getting around borrow checker shenanigans
-}
-
-impl<T> DLLnode<T> {
-    fn new(
-        beginning_char_index: usize,
-        inline_component: InlineTextComponent<T>,
-        index_of_prev: Option<usize>,
-        index_of_next: Option<usize>,
-        index_of_this: usize,
-    ) -> Self {
-        DLLnode {
-            beginning_char_index,
-            inline_component,
-            index_of_prev,
-            index_of_next,
-            index_of_this,
-        }
-    }
-}
-
-// we will be approxiamating a double linked list in rust by having each item in the list keep
-// track of the index of the next item.
-// TODO: make this in to a more proper arena using ops and stuff
-#[derive(Debug, Clone)]
-struct FakeDelimiterDLL<T> {
-    // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
-    dl_stack: Vec<DLLnode<T>>,
-    // Since we only push to the dll at the beginning, we do not need to keep track of
-    // "freeing" things for later. (monotonic?)
-    initial_index: Option<usize>,
-    final_index: Option<usize>,
-}
-
-impl<T> FakeDelimiterDLL<T> {
-    fn push_back(&mut self, begin_index: usize, dl: InlineTextComponent<T>) {
-        if self.initial_index.is_none() {
-            self.initial_index = Some(self.dl_stack.len());
-            self.final_index = Some(self.dl_stack.len());
-            self.dl_stack.push(DLLnode::new(
-                begin_index,
-                dl,
-                None,
-                None,
-                self.dl_stack.len(),
-            ));
-        } else {
-            self.dl_stack.push(DLLnode::new(
-                begin_index,
-                dl,
-                self.final_index,
-                None,
-                self.dl_stack.len(),
-            ));
-            self.dl_stack[self.final_index.unwrap()].index_of_next = Some(self.dl_stack.len() - 1);
-            self.final_index = Some(self.dl_stack.len() - 1);
-        }
-    }
-
-    // fn get_first(&self) -> Option<&DLLnode> {
-    //     self.initial_index.map(|i| &self.dl_stack[i])
-    // }
-    //
-    // fn get_first_mut(&mut self) -> Option<&mut DLLnode> {
-    //     self.initial_index.map(|i| &mut self.dl_stack[i])
-    // }
-    //
-    // fn get_last(&self) -> Option<&DLLnode> {
-    //     self.final_index.map(|i| &self.dl_stack[i])
-    // }
-
-    fn get_last_mut(&mut self) -> Option<&mut DLLnode<T>> {
-        self.final_index.map(|i| &mut self.dl_stack[i])
-    }
-
-    fn get(&self, index: usize) -> &DLLnode<T> {
-        &self.dl_stack[index]
-    }
-
-    fn get_mut(&mut self, index: usize) -> &mut DLLnode<T> {
-        &mut self.dl_stack[index]
-    }
-
-    fn get_next(&self, node: &DLLnode<T>) -> Option<&DLLnode<T>> {
-        node.index_of_next.map(|i| &self.dl_stack[i])
-    }
-
-    // fn get_next_mut(&mut self, node: &DLLnode) -> Option<&mut DLLnode> {
-    //     node.index_of_next.map(|i| &mut self.dl_stack[i])
-    // }
-    //
-    // fn delete_stack_above(&mut self, node_index: usize) {
-    //     self.dl_stack[node_index].index_of_next = None;
-    //     self.final_index = Some(node_index);
-    // }
-    //
-    // fn delete_stack_until_node(&mut self, bottom_node_index: usize, top_node_index: usize) {
-    //     self.dl_stack[bottom_node_index].index_of_next = Some(top_node_index);
-    //     self.dl_stack[top_node_index].index_of_prev = Some(bottom_node_index);
-    // }
-
-    fn replace_inside_stack_range(
-        &mut self,
-        bottom_node_index: usize,
-        top_node_index: usize,
-        begin_char_index: usize,
-        item: InlineTextComponent<T>,
-    ) {
-        self.dl_stack.push(DLLnode {
-            beginning_char_index: begin_char_index,
-            inline_component: item,
-            index_of_prev: Some(bottom_node_index),
-            index_of_next: Some(top_node_index),
-            index_of_this: self.dl_stack.len(),
-        });
-        self.dl_stack[bottom_node_index].index_of_next = Some(self.dl_stack.len() - 1);
-        self.dl_stack[top_node_index].index_of_prev = Some(self.dl_stack.len() - 1);
-    }
-
-    fn delete_stack_above_including(&mut self, node_index: usize) {
-        let prev_node_op = self.dl_stack[node_index]
-            .index_of_prev
-            .map(|i| &mut self.dl_stack[i]);
-        if let Some(prev_node) = prev_node_op {
-            prev_node.index_of_next = None;
-            self.final_index = Some(prev_node.index_of_this);
-        } else {
-            self.initial_index = None;
-            self.final_index = None;
-        }
-    }
-
-    // fn get_index_of_next(&self, index: usize) -> Option<usize> {
-    //     self.dl_stack[index].index_of_next
-    // }
-    //
-    // fn get_index_of_prev(&self, index: usize) -> Option<usize> {
-    //     self.dl_stack[index].index_of_prev
-    // }
-
-    fn remove_at_index(&mut self, index: usize) {
-        let next_op = self.dl_stack[index].index_of_next;
-        let prev_op = self.dl_stack[index].index_of_prev;
-        if let Some(prev_index) = prev_op {
-            self.dl_stack[prev_index].index_of_next = next_op;
-        } else {
-            self.initial_index = next_op;
-        }
-        if let Some(next_index) = next_op {
-            self.dl_stack[next_index].index_of_prev = prev_op;
-        } else {
-            self.final_index = prev_op;
-        }
-    }
-}
-
-// think about what functionality we will need as we go along stack
+type DLStack<'a, T: LeafContainerInline> =
+    ArenaDLL<InlineStructureDelimiters<T::Chars<'a>>, T::Offset>;
 
 //BackTick code spans, auto links, raw_html >
 //brackets in link text >
 //emph markers.
-pub fn parse_inline<'a>(
-    inline_str: &'a str,
-    lrd_table: &'a LRDTable,
-) -> Vec<InlineContent<&'a str>> {
-    let mut delimit_stack: FakeDelimiterDLL<&'a str> = FakeDelimiterDLL {
-        dl_stack: vec![],
-        initial_index: None,
-        final_index: None,
-    };
-    // let mut char_iter = chars.iter().enumerate().peekable();
-    let mut char_iter = BorrowedStringPCI::new(inline_str);
+pub fn parse_inline<'a, C>(
+    inline_container: &'a C,
+    lrd_table: &LRDTable,
+) -> Vec<InlineContent<C::Chars<'a>>>
+where
+    C: LeafContainerInline,
+    C::Offset: Add<usize, Output = C::Offset> + Ord + Clone + Debug + Copy,
+{
+    let mut delimit_stack: DLStack<C> = ArenaDLL::default();
+    let mut char_iter = inline_container.as_pci();
 
-    let add_text_to_stack =
-        |sicl: &mut FakeDelimiterDLL<&'a str>, text_begin: usize, text_end: usize| {
-            if text_end > text_begin {
-                sicl.push_back(
-                    text_begin,
-                    InlineTextComponent::TextualContent(text_end - text_begin),
-                );
-            }
-        };
-    let mut text_begin = 0;
+    let add_text_to_stack = |sicl: &mut DLStack<C>, text_begin: C::Offset, text_end: C::Offset| {
+        if text_end > text_begin {
+            sicl.push_back(
+                text_begin,
+                InlineStructureDelimiters::TextualContent(text_begin..text_end),
+            );
+        }
+    };
+    let mut text_begin = char_iter.offset();
+    let mut first_space_offset: Option<C::Offset> = None;
     let mut space_count = 0;
     let mut preceding_char = ' '; // for purposes of emphasis delimeter types (beginning counts as
     // whitespace)
     //do the function!
     while let Some((char_index, c)) = char_iter.next_and_index() {
         match c {
-            ' ' => space_count += 1,
+            ' ' => {
+                space_count += 1;
+                if first_space_offset.is_none() {
+                    first_space_offset = Some(char_index);
+                }
+            }
             '\n' => {
-                // simple subtraction is ok here, we know spaces take up one byte.
-                add_text_to_stack(&mut delimit_stack, text_begin, char_index - space_count);
+                add_text_to_stack(
+                    &mut delimit_stack,
+                    text_begin,
+                    first_space_offset.unwrap_or(char_index),
+                );
                 if space_count >= 2 {
-                    delimit_stack
-                        .push_back(char_index, InlineTextComponent::CompletedContent(Hardbreak));
+                    delimit_stack.push_back(
+                        char_index,
+                        InlineStructureDelimiters::CompletedContent(Hardbreak),
+                    );
                 } else {
-                    delimit_stack
-                        .push_back(char_index, InlineTextComponent::CompletedContent(Softbreak));
+                    delimit_stack.push_back(
+                        char_index,
+                        InlineStructureDelimiters::CompletedContent(Softbreak),
+                    );
                 }
                 space_count = 0;
-                text_begin = char_index + 1;
+                first_space_offset = None;
+                text_begin = char_iter.offset();
             }
-            _ => space_count = 0,
+            _ => {
+                space_count = 0;
+                first_space_offset = None;
+            }
         }
         match c {
             '\\' => {
-                if let Some(c) = char_iter.peek() {
+                if let Some((o, c)) = char_iter.next_and_index() {
                     if c.is_ascii_punctuation() {
                         add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                         //exclude the backslash, include just the punctuation
                         delimit_stack
-                            .push_back(char_index + 1, InlineTextComponent::TextualContent(1));
+                            .push_back(o, InlineStructureDelimiters::TextualContent(o..o + 1));
                         // both characters are 1 byte.
-                        text_begin = char_index + 2;
-                    }
-                    if c == '\n' {
+                        text_begin = char_iter.offset();
+                    } else if c == '\n' {
                         add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                         delimit_stack.push_back(char_index, CompletedContent(Hardbreak));
-                        text_begin = char_index + 2;
+                        text_begin = char_iter.offset();
                     }
-                    char_iter.next();
-                    preceding_char = 'c';
+                    preceding_char = c;
                 }
             }
             '`' => {
@@ -636,49 +425,47 @@ pub fn parse_inline<'a>(
                 // TODO: space stripping.
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
 
-                char_iter.consume_while_char_eq('`');
-                let initial_tick_count = char_iter.offset() - char_index;
+                let initial_tick_count = 1 + char_iter.consume_while_char_eq('`');
+                let start_offset = char_iter.offset();
 
                 let mut matching_tick_count_search_iter = char_iter.clone();
+
                 let mut code_completed = false;
-                let starts_with_space = matches!(
-                    matching_tick_count_search_iter.peek(),
-                    Some(' ') | Some('\n')
-                );
-                let mut entirely_space = starts_with_space;
+                let starts_with_space = matching_tick_count_search_iter
+                    .next_if(|c| " \n".contains(c))
+                    .map(|_| matching_tick_count_search_iter.offset());
+                let mut entirely_space = starts_with_space.is_some();
                 let mut last_is_space = starts_with_space;
-                'search_for_matching_tc: while let Some((closing_ticks_start_pos, c)) =
+                'search_for_matching_tc: while let Some((current_offset, c)) =
                     matching_tick_count_search_iter.next_and_index()
                 {
                     if c == '`' {
-                        matching_tick_count_search_iter.consume_while_char_eq('`');
                         let closing_tick_count =
-                            matching_tick_count_search_iter.offset() - closing_ticks_start_pos;
-
+                            1 + matching_tick_count_search_iter.consume_while_char_eq('`');
                         if closing_tick_count == initial_tick_count {
                             char_iter = matching_tick_count_search_iter;
-                            let remove_space =
-                                if starts_with_space && last_is_space && !entirely_space {
-                                    1
-                                } else {
-                                    0
-                                };
                             delimit_stack.push_back(
                                 char_index,
-                                CompletedContent(Code(
-                                    &inline_str[char_index + initial_tick_count + remove_space
-                                        ..closing_ticks_start_pos - remove_space],
-                                )),
+                                CompletedContent(Code(inline_container.chars_in_range(
+                                    if let Some(after_first_space) = starts_with_space
+                                        && let Some(before_last_space) = last_is_space
+                                        && !entirely_space
+                                    {
+                                        after_first_space..before_last_space
+                                    } else {
+                                        start_offset..current_offset
+                                    },
+                                ))),
                             );
                             code_completed = true;
-                            text_begin = closing_ticks_start_pos + closing_tick_count;
+                            text_begin = current_offset + closing_tick_count;
                             break 'search_for_matching_tc;
                         }
                     }
                     if " \n".contains(c) {
-                        last_is_space = true;
+                        last_is_space = Some(current_offset);
                     } else {
-                        last_is_space = false;
+                        last_is_space = None;
                         entirely_space = false;
                     }
                 }
@@ -697,9 +484,7 @@ pub fn parse_inline<'a>(
                 // indices.
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
 
-                char_iter.consume_while_char_eq(c);
-
-                let dc = char_iter.offset() - char_index;
+                let dc = 1 + char_iter.consume_while_char_eq(c);
 
                 //for these purposes, end and beginning of line count as whitespace.
                 let following_char = char_iter.peek().unwrap_or(' ');
@@ -751,34 +536,39 @@ pub fn parse_inline<'a>(
             ']' => {
                 // do the back search thing.
                 add_text_to_stack(&mut delimit_stack, text_begin, char_index);
-                let mut matched_node_op = delimit_stack.get_last_mut();
+                let mut matched_node_id_op = delimit_stack.get_end_id();
 
-                while let Some(ref matched_node) = matched_node_op {
-                    if matches!(matched_node.inline_component, LinkOpen(..))
-                        || matches!(matched_node.inline_component, ImgOpen(..))
-                    {
+                while let Some(ref matched_node_id) = matched_node_id_op {
+                    if matches!(
+                        delimit_stack.get_content(*matched_node_id),
+                        LinkOpen(..) | ImgOpen(..)
+                    ) {
                         break;
                     }
-                    matched_node_op = matched_node.index_of_prev.map(|i| delimit_stack.get_mut(i));
+                    matched_node_id_op = delimit_stack.get_prev_id(*matched_node_id);
                 }
 
-                let Some(matched_node) = matched_node_op else {
+                let Some(matched_node_id) = matched_node_id_op else {
                     delimit_stack.push_back(char_index, BrackClose);
-                    text_begin = char_index + 1;
+                    text_begin = char_iter.offset();
                     continue;
                 };
-                let matched_node_itc = &mut matched_node.inline_component;
-                if matches!(matched_node_itc, LinkOpen(false, ..))
-                    || matches!(matched_node_itc, ImgOpen(false, ..))
-                {
-                    matched_node.inline_component.convert_to_completed_content();
+
+                let matched_itc = delimit_stack.get_content(matched_node_id);
+                if matches!(
+                    delimit_stack.get_content(matched_node_id),
+                    LinkOpen(false, ..) | ImgOpen(false, ..)
+                ) {
+                    let start_index = *delimit_stack.get_position_indicator(matched_node_id);
+                    delimit_stack
+                        .get_content_mut(matched_node_id)
+                        .convert_to_completed_content(start_index);
                     add_text_to_stack(&mut delimit_stack, text_begin, char_index);
                     delimit_stack.push_back(char_index, BrackClose);
-                    text_begin = char_index + 1;
+                    text_begin = char_iter.offset();
                     continue;
                 }
-                let index_of_matched = matched_node.index_of_this;
-                let is_image = matches!(matched_node_itc, ImgOpen(..));
+                let is_image = matches!(matched_itc, ImgOpen(..));
                 // we have found one and it is active
                 // let link_content_iter = match matched_node_itc {
                 //     LinkOpen(true, iter) | ImgOpen(true, iter) => iter.clone(),
@@ -786,133 +576,145 @@ pub fn parse_inline<'a>(
                 // };
 
                 let mut link_made = false;
-                let mut try_to_inline_link_iter = char_iter.clone();
-                let mut try_to_reference_link_iter = char_iter.clone();
-                if let Some((dest_op, tit_op)) =
-                    dbg!(parse_inline_suffix(&mut try_to_inline_link_iter))
-                {
-                    let bci = matched_node.beginning_char_index;
-                    let link_displayed = process_emphasis(
-                        Some(matched_node.index_of_this),
-                        &mut delimit_stack,
-                        inline_str,
-                    );
-                    delimit_stack.push_back(
-                        bci,
-                        CompletedContent(InlineLink(
-                            is_image,
-                            dest_op.map(|range| &inline_str[range]),
-                            tit_op.map(|range| &inline_str[range]),
-                            link_displayed,
-                        )),
-                    );
-                    char_iter = try_to_inline_link_iter;
-                    text_begin = char_iter.offset();
-                    link_made = true;
-                } else if let Some(rlt) =
-                    dbg!(parse_reference_link(&mut try_to_reference_link_iter))
-                {
-                    match rlt {
-                        Full(range) => {
-                            // dbg!(&(start, end));
-                            let norm_lab = normalize_label(&inline_str[range]);
-                            dbg!(lrd_table);
-                            dbg!(&norm_lab);
-                            if lrd_table.contains_key(&norm_lab) {
-                                let bci = matched_node.beginning_char_index;
-                                let link_displayed = process_emphasis(
-                                    Some(matched_node.index_of_this),
-                                    &mut delimit_stack,
-                                    inline_str,
-                                );
-                                delimit_stack.push_back(
-                                    bci,
-                                    CompletedContent(ReferenceLink(
-                                        is_image,
-                                        norm_lab,
-                                        link_displayed,
-                                    )),
-                                );
-                                char_iter = try_to_reference_link_iter;
-                                text_begin = char_iter.offset();
-                                link_made = true;
-                            }
-                        }
-                        Collapsed => {
-                            let norm_lab = normalize_label(
-                                &inline_str[matched_node.beginning_char_index
-                                    + if is_image { 1 } else { 0 }
-                                    ..char_iter.offset()],
-                            );
-                            if lrd_table.contains_key(&norm_lab) {
-                                let bci = matched_node.beginning_char_index;
-                                let link_displayed = process_emphasis(
-                                    Some(matched_node.index_of_this),
-                                    &mut delimit_stack,
-                                    inline_str,
-                                );
-                                delimit_stack.push_back(
-                                    bci,
-                                    CompletedContent(ReferenceLink(
-                                        is_image,
-                                        norm_lab,
-                                        link_displayed,
-                                    )),
-                                );
-                                char_iter = try_to_reference_link_iter;
-                                text_begin = char_iter.offset();
-                                link_made = true;
-                            }
-                        }
-                    }
-                } else {
-                    // try for a shortcut link.
-                    let norm_lab = normalize_label(
-                        &inline_str[matched_node.beginning_char_index + if is_image { 1 } else { 0 }
-                            ..char_iter.offset()],
-                    );
-                    if lrd_table.contains_key(&norm_lab) {
-                        let bci = matched_node.beginning_char_index;
+                'try_to_make_link: {
+                    let mut try_to_inline_link_iter = char_iter.clone();
+                    let mut try_to_reference_link_iter = char_iter.clone();
+                    if let Some((dest_op, tit_op)) =
+                        dbg!(parse_inline_suffix(&mut try_to_inline_link_iter))
+                    {
+                        let bci = *delimit_stack.get_position_indicator(matched_node_id);
+
                         let link_displayed = process_emphasis(
-                            Some(matched_node.index_of_this),
+                            Some(matched_node_id),
                             &mut delimit_stack,
-                            inline_str,
+                            inline_container,
                         );
                         delimit_stack.push_back(
                             bci,
-                            CompletedContent(ReferenceLink(is_image, norm_lab, link_displayed)),
+                            CompletedContent(InlineLink(
+                                is_image,
+                                dest_op.map(|range| inline_container.chars_in_range(range)),
+                                tit_op.map(|range| inline_container.chars_in_range(range)),
+                                link_displayed,
+                            )),
                         );
+                        char_iter = try_to_inline_link_iter;
                         text_begin = char_iter.offset();
                         link_made = true;
+                    } else if let Some(rlt) =
+                        dbg!(parse_reference_link(&mut try_to_reference_link_iter))
+                    {
+                        match rlt {
+                            Full(range) => {
+                                // dbg!(&(start, end));
+                                let my_str: String =
+                                    inline_container.chars_in_range(range).collect();
+                                let norm_lab = normalize_label(&my_str);
+                                // dbg!(lrd_table);
+                                // dbg!(&norm_lab);
+                                if lrd_table.contains_key(&norm_lab) {
+                                    let bci =
+                                        *delimit_stack.get_position_indicator(matched_node_id);
+                                    let link_displayed = process_emphasis(
+                                        Some(matched_node_id),
+                                        &mut delimit_stack,
+                                        inline_container,
+                                    );
+                                    delimit_stack.push_back(
+                                        bci,
+                                        CompletedContent(ReferenceLink(
+                                            is_image,
+                                            norm_lab,
+                                            link_displayed,
+                                        )),
+                                    );
+                                    char_iter = try_to_reference_link_iter;
+                                    text_begin = char_iter.offset();
+                                    link_made = true;
+                                }
+                            }
+                            Collapsed => {
+                                let Some(after_opener_start_offset) = delimit_stack
+                                    .get_next_id(matched_node_id)
+                                    .map(|id| delimit_stack.get_position_indicator(id))
+                                else {
+                                    break 'try_to_make_link;
+                                };
+                                let my_str: String = inline_container
+                                    .chars_in_range(*after_opener_start_offset..char_index)
+                                    .collect();
+                                let norm_lab = normalize_label(&my_str);
+                                if lrd_table.contains_key(&norm_lab) {
+                                    let bci =
+                                        *delimit_stack.get_position_indicator(matched_node_id);
+                                    let link_displayed = process_emphasis(
+                                        Some(matched_node_id),
+                                        &mut delimit_stack,
+                                        inline_container,
+                                    );
+                                    delimit_stack.push_back(
+                                        bci,
+                                        CompletedContent(ReferenceLink(
+                                            is_image,
+                                            norm_lab,
+                                            link_displayed,
+                                        )),
+                                    );
+                                    char_iter = try_to_reference_link_iter;
+                                    text_begin = char_iter.offset();
+                                    link_made = true;
+                                }
+                            }
+                        }
+                    } else {
+                        let Some(after_opener_start_offset) = delimit_stack
+                            .get_next_id(matched_node_id)
+                            .map(|id| delimit_stack.get_position_indicator(id))
+                        else {
+                            break 'try_to_make_link;
+                        };
+                        let my_str: String = inline_container
+                            .chars_in_range(*after_opener_start_offset..char_index)
+                            .collect();
+                        let norm_lab = normalize_label(&my_str);
+                        if lrd_table.contains_key(&norm_lab) {
+                            let bci = *delimit_stack.get_position_indicator(matched_node_id);
+                            let link_displayed = process_emphasis(
+                                Some(matched_node_id),
+                                &mut delimit_stack,
+                                inline_container,
+                            );
+                            delimit_stack.push_back(
+                                bci,
+                                CompletedContent(ReferenceLink(is_image, norm_lab, link_displayed)),
+                            );
+                            char_iter = try_to_reference_link_iter;
+                            text_begin = char_iter.offset();
+                            link_made = true;
+                        }
                     }
                 }
                 if !link_made {
-                    dbg!("=========");
-                    dbg!("failed to make link");
-                    dbg!("========");
+                    let start_index = *delimit_stack.get_position_indicator(matched_node_id);
                     delimit_stack
-                        .get_mut(index_of_matched)
-                        .inline_component
-                        .convert_to_completed_content();
-                    delimit_stack.push_back(char_index, TextualContent(1));
-                    // matched_node.inline_component = matched_node.inline_component.to_text_comp();
-                    text_begin = char_index + 1;
+                        .get_content_mut(matched_node_id)
+                        .convert_to_completed_content(start_index);
+                    delimit_stack
+                        .push_back(char_index, TextualContent(char_index..char_iter.offset()));
+                    text_begin = char_iter.offset();
                 } else if !is_image {
                     //disable earlier link openers
-                    let mut before_opener_index_op =
-                        delimit_stack.get_mut(index_of_matched).index_of_prev;
-                    while let Some(before_opener_index) = before_opener_index_op {
-                        if let LinkOpen(ref mut b @ true) =
-                            delimit_stack.get_mut(before_opener_index).inline_component
+                    let mut before_opener_id_op = delimit_stack.get_prev_id(matched_node_id);
+                    while let Some(before_opener_id) = before_opener_id_op {
+                        if let LinkOpen(b @ true) = delimit_stack.get_content_mut(before_opener_id)
                         {
                             *b = false;
                         }
-                        before_opener_index_op =
-                            delimit_stack.get_mut(before_opener_index).index_of_prev;
+                        before_opener_id_op = delimit_stack.get_prev_id(before_opener_id)
                     }
                 }
-                // if !link_made {
-                // }
+                //could technically be ')', but doesnt matter for purposes of is_punc/is_not_punc
+                preceding_char = ']';
             }
             '<' => {
                 let real_range_bottom = char_index;
@@ -923,7 +725,10 @@ pub fn parse_inline<'a>(
                 if let Some((range, is_email)) = parse_autolink(&mut autolink_iter) {
                     delimit_stack.push_back(
                         char_index,
-                        CompletedContent(AutoLink(&inline_str[range], is_email)),
+                        CompletedContent(AutoLink(
+                            inline_container.chars_in_range(range),
+                            is_email,
+                        )),
                     );
                     char_iter = autolink_iter;
                     text_begin = char_iter.offset();
@@ -933,10 +738,10 @@ pub fn parse_inline<'a>(
                 {
                     delimit_stack.push_back(
                         char_index,
-                        CompletedContent(HTMLTag(&inline_str[tag_range.clone()])),
+                        CompletedContent(HTMLTag(inline_container.chars_in_range(tag_range))),
                     );
                     char_iter = html_iter;
-                    text_begin = tag_range.end;
+                    text_begin = char_iter.offset();
                     preceding_char = '>'
                 } else {
                     add_text_to_stack(&mut delimit_stack, char_index, char_index + 1);
@@ -952,318 +757,189 @@ pub fn parse_inline<'a>(
     add_text_to_stack(
         &mut delimit_stack,
         text_begin,
-        inline_str.len() - space_count,
+        first_space_offset.unwrap_or(char_iter.offset()),
     );
 
-    process_emphasis(None, &mut delimit_stack, inline_str)
+    process_emphasis(None, &mut delimit_stack, inline_container)
 }
 
-fn process_emphasis<'a>(
-    stack_bottom: Option<usize>,
-    stack: &mut FakeDelimiterDLL<&'a str>,
-    inline_str: &'a str,
-) -> Vec<InlineContent<&'a str>> {
+//TODO!
+fn process_emphasis<'a, C>(
+    stack_bottom_id_op: Option<DLLNodeID>,
+    dl_stack: &mut DLStack<'a, C>,
+    inline_container: &'a C,
+) -> Vec<InlineContent<C::Chars<'a>>>
+where
+    C: LeafContainerInline,
+    C::Offset: Add<usize, Output = C::Offset> + Ord + Clone + Debug + Copy,
+{
+    // todo!();
+    let stack_bottom_char_offset: Option<C::Offset> =
+        stack_bottom_id_op.map(|id| *dl_stack.get_position_indicator(id));
     // dbg!("processing emph");
     // dbg!(&stack);
-    // dbg!(&stack_bottom);
-    let mut current_index_op =
-        stack_bottom.map_or(stack.initial_index, |i| stack.get(i).index_of_next);
-    let stack_bottom_char_index =
-        stack_bottom.map(|dll_pointer| stack.get(dll_pointer).beginning_char_index);
-    // only set op_bot when we find a non_matched closer_delimiter
-    // set it as the *CHARACTER_OFFSET* in the corresponding vec of chars.
-    let mut openers_bottom_asts_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let mut openers_bottom_asts_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let mut openers_bottom_unds_and_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    let mut openers_bottom_unds_not_opening: [Option<usize>; 3] = [stack_bottom_char_index; 3];
-    // index_in_fakedldll, char_offset it points to
-    let mut unds_op_stack: Vec<(usize, usize)> = vec![];
-    let mut asts_op_stack: Vec<(usize, usize)> = vec![];
+    // // dbg!(&stack_bottom);
+    // let mut current_index_op =
+    let mut current_id_op = if let Some(sbid) = stack_bottom_id_op
+        && let Some(sbnxt_id) = dl_stack.get_next_id(sbid)
+    {
+        Some(sbnxt_id)
+    } else {
+        None
+    };
 
-    //TODO: DRY THIS SOMEHOW, UNDS AND ASTS are the same except variable names
-    while let Some(current_index) = current_index_op {
-        let current_dllnode = stack.get(current_index);
-        let current_beginning_char_index = current_dllnode.beginning_char_index;
-        match current_dllnode.inline_component {
-            Asts(total_count, consumed, pot_op, pot_clos) => {
-                dbg!(&asts_op_stack);
-                if pot_clos && !asts_op_stack.is_empty() {
-                    let mut asts_op_stack_offset = asts_op_stack.len() - 1;
-                    let this_op_bottom = if pot_op {
-                        &mut openers_bottom_asts_and_opening[total_count % 3]
-                    } else {
-                        &mut openers_bottom_asts_not_opening[total_count % 3]
-                    };
-                    let mut matching_dl_index_op = None;
-                    while this_op_bottom.is_none_or(|x| asts_op_stack[asts_op_stack_offset].1 > x) {
-                        if let Asts(op_tc, _, true, op_pc) = stack
-                            .get(asts_op_stack[asts_op_stack_offset].0)
-                            .inline_component
-                        {
-                            if (op_pc || pot_op)
-                                && (total_count + op_tc) % 3 == 0
-                                && !(total_count % 3 == 0 && op_tc % 3 == 0)
-                            {
-                                if asts_op_stack_offset == 0 {
-                                    break;
-                                }
-                                asts_op_stack_offset -= 1;
-                                continue;
+    //     stack_bottom.map_or(stack.initial_index, |i| stack.get_content(i).index_of_next);
+    // let stack_bottom_char_index =
+    //     stack_bottom.map(|dll_pointer| stack.get_content(dll_pointer).beginning_char_index);
+    // // only set op_bot when we find a non_matched closer_delimiter
+    // // set it as the *CHARACTER_OFFSET* in the corresponding vec of chars.
+    // TODO: I think only and_opening needs this adjustment?
+    // maybe write some generated tests to see what values ever actually change?
+    let mut openers_bottom_asts_and_opening: [Option<C::Offset>; 3] = [stack_bottom_char_offset; 3];
+    let mut openers_bottom_asts_not_opening: [Option<C::Offset>; 3] = [stack_bottom_char_offset; 3];
+
+    let mut openers_bottom_unds_and_opening: [Option<C::Offset>; 3] = [stack_bottom_char_offset; 3];
+    let mut openers_bottom_unds_not_opening: [Option<C::Offset>; 3] = [stack_bottom_char_offset; 3];
+    // index_in_fakedldll, char_offset it points to
+    let mut asts_op_stack: Vec<DLLNodeID> = vec![];
+    let mut unds_op_stack: Vec<DLLNodeID> = vec![];
+    // todo!();
+    //
+    // //TODO: DRY THIS SOMEHOW, UNDS AND ASTS are the same except variable names
+    while let Some(current_id) = current_id_op {
+        match dl_stack.get_content(current_id) {
+            Asts(total_count, consumed, pot_op, pot_close)
+            | Unds(total_count, consumed, pot_op, pot_close) => {
+                let (this_opener_bottom, this_op_stack, other_op_stack) =
+                    match dl_stack.get_content(current_id) {
+                        Asts(.., po, _) => (
+                            if *po {
+                                &mut openers_bottom_asts_and_opening[*total_count % 3]
                             } else {
-                                matching_dl_index_op = Some(asts_op_stack[asts_op_stack_offset].0);
-                                break;
+                                &mut openers_bottom_asts_not_opening[*total_count % 3]
+                            },
+                            &mut asts_op_stack,
+                            &mut unds_op_stack,
+                        ),
+                        Unds(.., po, _) => (
+                            if *po {
+                                &mut openers_bottom_unds_and_opening[*total_count % 3]
+                            } else {
+                                &mut openers_bottom_unds_not_opening[*total_count % 3]
+                            },
+                            &mut unds_op_stack,
+                            &mut asts_op_stack,
+                        ),
+                        _ => unreachable!(),
+                    };
+                if *pot_close && !this_op_stack.is_empty() {
+                    let mut this_op_stack_offset = this_op_stack.len() - 1;
+                    let matching_dl_id_op: Option<DLLNodeID> = loop {
+                        if this_opener_bottom.is_none_or(|x| {
+                            *dl_stack.get_position_indicator(this_op_stack[this_op_stack_offset])
+                                > x
+                        }) {
+                            match dl_stack.get_content(this_op_stack[this_op_stack_offset]) {
+                                Asts(opener_tc, _, true, opener_pc)
+                                | Unds(opener_tc, _, true, opener_pc) => {
+                                    if (*opener_pc || *pot_op)
+                                        && (total_count + *opener_tc) % 3 == 0
+                                        && !(total_count % 3 == 0 && opener_tc % 3 == 0)
+                                    {
+                                        if this_op_stack_offset == 0 {
+                                            break None;
+                                        }
+                                        this_op_stack_offset -= 1;
+                                    } else {
+                                        break Some(this_op_stack[this_op_stack_offset]);
+                                    }
+                                }
+                                _ => unreachable!(),
                             }
                         } else {
-                            panic!("should be some asts here")
+                            break None;
                         }
-                    }
-                    if let Some(matching_dl_index) = matching_dl_index_op {
-                        let (op_tc, op_used) = match stack.get(matching_dl_index).inline_component {
-                            Asts(ot, ou, ..) => (ot, ou),
-                            _ => panic!("should be Asts here"),
-                        };
-                        let matching_dl_unconsumed = op_tc - op_used;
-                        let this_dl_unconsumed = total_count - consumed;
-                        let is_strong = matching_dl_unconsumed >= 2 && this_dl_unconsumed >= 2;
-                        // turn stack items inside the stack delimiters into actual inline content.
-                        let mut emph_children: Vec<InlineContent<&'a str>> = vec![];
-                        let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
-                        while node_to_eat_index_op.is_some_and(|ntei| {
-                            stack.get(ntei).beginning_char_index < current_beginning_char_index
-                        }) {
-                            let nte = stack.get_mut(node_to_eat_index_op.unwrap());
-                            emph_children.push(
-                                nte.inline_component.convert_to_inline_content(
-                                    nte.beginning_char_index,
-                                    inline_str,
-                                ),
-                            );
-                            node_to_eat_index_op = nte.index_of_next;
-                        }
-                        // also clear out any delimiters on the stacks weve made in this function
-                        while unds_op_stack
-                            .pop_if(|(_, opener_char)| {
-                                *opener_char > stack.get(matching_dl_index).beginning_char_index
-                            })
-                            .is_some()
-                        {}
-                        while asts_op_stack
-                            .pop_if(|(_, opener_char)| {
-                                *opener_char > stack.get(matching_dl_index).beginning_char_index
-                            })
-                            .is_some()
-                        {}
-                        stack.replace_inside_stack_range(
-                            matching_dl_index,
-                            current_index,
-                            stack.get(matching_dl_index).beginning_char_index + op_tc,
-                            CompletedContent(if is_strong {
-                                Strong(emph_children)
-                            } else {
-                                Emph(emph_children)
-                            }),
-                        );
-                        let closer_used_is_total;
-                        if let Asts(total, used, ..) =
-                            &mut stack.get_mut(current_index).inline_component
-                        {
-                            *used += if is_strong { 2 } else { 1 };
-                            closer_used_is_total = *used == *total;
-                        } else {
-                            panic!("expect unds");
-                        }
-                        if closer_used_is_total {
-                            current_index_op = stack
-                                .get_next(stack.get(current_index))
-                                .map(|s| s.index_of_this);
-                            stack.remove_at_index(current_index);
-                        }
-                        let opener_used_is_total;
-                        //TODO use panicking let statements, no if needed
-                        if let Asts(total, used, ..) =
-                            &mut stack.get_mut(matching_dl_index).inline_component
-                        {
-                            *used += if is_strong { 2 } else { 1 };
-                            opener_used_is_total = *used == *total;
-                        } else {
-                            panic!("expected asts")
-                        }
-                        if opener_used_is_total {
-                            stack.remove_at_index(matching_dl_index);
-                            asts_op_stack.remove(asts_op_stack_offset);
-                        }
-                        continue;
-                    } else {
-                        *this_op_bottom = stack.get(current_index).index_of_prev;
-                        if pot_op {
-                            asts_op_stack.push((
-                                current_index,
-                                stack.get(current_index).beginning_char_index,
-                            ));
+                    };
+
+                    let Some(matching_dl_id) = matching_dl_id_op else {
+                        *this_opener_bottom = dl_stack
+                            .get_prev_id(current_id)
+                            .map(|prev_id| *dl_stack.get_position_indicator(prev_id));
+                        if *pot_op {
+                            asts_op_stack.push(current_id);
                         }
                         // we don't need a notion of "deleting" non potential_openers Since
                         // we track backwards in a different stack than this.
-                        current_index_op = stack.get(current_index).index_of_next;
-                    }
-                } else if pot_op {
-                    asts_op_stack
-                        .push((current_index, stack.get(current_index).beginning_char_index));
-                    current_index_op = stack.get(current_index).index_of_next;
-                } else {
-                    current_index_op = stack.get(current_index).index_of_next;
-                }
-            }
-            Unds(total_count, consumed, pot_op, pot_clos) => {
-                dbg!(&unds_op_stack);
-                if pot_clos && !unds_op_stack.is_empty() {
-                    let mut unds_op_stack_offset = unds_op_stack.len() - 1;
-                    let this_op_bottom = if pot_op {
-                        &mut openers_bottom_unds_and_opening[total_count % 3]
-                    } else {
-                        &mut openers_bottom_unds_not_opening[total_count % 3]
-                    };
-                    let mut matching_dl_index_op = None;
-                    while this_op_bottom.is_none_or(|x| unds_op_stack[unds_op_stack_offset].1 > x) {
-                        if let Unds(op_tc, _, true, op_pc) = stack
-                            .get(unds_op_stack[unds_op_stack_offset].0)
-                            .inline_component
-                        {
-                            if (op_pc || pot_op)
-                                && (total_count + op_tc % 3 == 0
-                                    && !(total_count % 3 == 0 && op_tc % 3 == 0))
-                            {
-                                if unds_op_stack_offset == 0 {
-                                    break;
-                                }
-                                unds_op_stack_offset -= 1;
-                                continue;
-                            } else {
-                                matching_dl_index_op = Some(unds_op_stack[unds_op_stack_offset].0);
-                                break;
-                            }
-                        } else {
-                            panic!("should be some unds here")
-                        }
-                    }
-                    if let Some(matching_dl_index) = matching_dl_index_op {
-                        let (op_tc, op_used) = match stack.get(matching_dl_index).inline_component {
-                            Unds(ot, ou, ..) => (ot, ou),
-                            _ => panic!("should be Unds here"),
-                        };
-                        let matching_dl_unconsumed = op_tc - op_used;
-                        let this_dl_unconsumed = total_count - consumed;
-                        let is_strong = matching_dl_unconsumed >= 2 && this_dl_unconsumed >= 2;
-                        // turn stack items inside the stack delimiters into actual inline content.
-                        let mut emph_children: Vec<InlineContent<&'a str>> = vec![];
-                        let mut node_to_eat_index_op = stack.get(matching_dl_index).index_of_next;
-                        while node_to_eat_index_op.is_some_and(|ntei| {
-                            stack.get(ntei).beginning_char_index < current_beginning_char_index
-                        }) {
-                            let nte = stack.get_mut(node_to_eat_index_op.unwrap());
-                            emph_children.push(
-                                nte.inline_component.convert_to_inline_content(
-                                    nte.beginning_char_index,
-                                    inline_str,
-                                ),
-                            );
-                            node_to_eat_index_op = nte.index_of_next;
-                        }
-                        // also clear out any delimiters on the stacks weve made in this function
-                        while unds_op_stack
-                            .pop_if(|(_, opener_char)| {
-                                *opener_char > stack.get(matching_dl_index).beginning_char_index
-                            })
-                            .is_some()
-                        {}
-                        while asts_op_stack
-                            .pop_if(|(_, opener_char)| {
-                                *opener_char > stack.get(matching_dl_index).beginning_char_index
-                            })
-                            .is_some()
-                        {}
-                        stack.replace_inside_stack_range(
-                            matching_dl_index,
-                            current_index,
-                            stack.get(matching_dl_index).beginning_char_index + op_tc,
-                            CompletedContent(if is_strong {
-                                Strong(emph_children)
-                            } else {
-                                Emph(emph_children)
-                            }),
-                        );
-                        let closer_used_is_total;
-                        if let Unds(total, used, ..) =
-                            &mut stack.get_mut(current_index).inline_component
-                        {
-                            *used += if is_strong { 2 } else { 1 };
-                            closer_used_is_total = *used == *total;
-                        } else {
-                            panic!("expect unds");
-                        }
-                        if closer_used_is_total {
-                            current_index_op = stack
-                                .get_next(stack.get(current_index))
-                                .map(|s| s.index_of_this);
-                            stack.remove_at_index(current_index);
-                        }
-                        let opener_used_is_total;
-                        //TODO: make this not use if let, just let and panic.
-                        if let Unds(total, used, ..) =
-                            &mut stack.get_mut(matching_dl_index).inline_component
-                        {
-                            *used += if is_strong { 2 } else { 1 };
-                            opener_used_is_total = *used == *total;
-                        } else {
-                            panic!("expected unds")
-                        }
-                        if opener_used_is_total {
-                            stack.remove_at_index(matching_dl_index);
-                            unds_op_stack.remove(unds_op_stack_offset);
-                        }
+                        current_id_op = dl_stack.get_next_id(current_id);
                         continue;
-                    } else {
-                        *this_op_bottom = stack.get(current_index).index_of_prev;
-                        if pot_op {
-                            unds_op_stack.push((
-                                current_index,
-                                stack.get(current_index).beginning_char_index,
-                            ));
+                    };
+                    let (op_tc, op_used) = match dl_stack.get_content(matching_dl_id) {
+                        Asts(ot, ou, ..) | Unds(ot, ou, ..) => (ot, ou),
+                        _ => unreachable!(),
+                    };
+                    let matching_dl_unconsumed = op_tc - op_used;
+                    let this_dl_unconsumed = total_count - consumed;
+                    let is_strong = matching_dl_unconsumed >= 2 && this_dl_unconsumed >= 2;
+                    // turn stack items inside the stack delimiters into actual inline content.
+                    let mut emph_children: Vec<InlineContent<C::Chars<'a>>> = vec![];
+                    let mut start_pos = None;
+                    for (isd, pos) in dl_stack.take_content_between(matching_dl_id, current_id) {
+                        if start_pos.is_none() {
+                            start_pos = Some(pos);
                         }
-                        // we don't need a notion of "deleting" non potential_openers Since
-                        // we track backwards in a different stack than this.
-                        current_index_op = stack.get(current_index).index_of_next;
+                        emph_children.push(isd.to_inline_content(pos, inline_container));
                     }
-                } else if pot_op {
-                    unds_op_stack
-                        .push((current_index, stack.get(current_index).beginning_char_index));
-                    current_index_op = stack.get(current_index).index_of_next;
+                    // also clear out any delimiters on our local stack that we took inside the emphasis
+                    while this_op_stack
+                        .pop_if(|node_id| dl_stack.is_taken(*node_id))
+                        .is_some()
+                    {}
+                    while other_op_stack
+                        .pop_if(|node_id| dl_stack.is_taken(*node_id))
+                        .is_some()
+                    {}
+                    dl_stack.replace_inside_stack_range(
+                        matching_dl_id,
+                        current_id,
+                        start_pos.unwrap(),
+                        CompletedContent(if is_strong {
+                            Strong(emph_children)
+                        } else {
+                            Emph(emph_children)
+                        }),
+                    );
+                    match dl_stack.get_content_mut(current_id) {
+                        Asts(total, used, ..) | Unds(total, used, ..) => {
+                            *used += if is_strong { 2 } else { 1 };
+                            if *used == *total {
+                                current_id_op = dl_stack.get_next_id(current_id);
+                                dl_stack.delete(current_id);
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
+                    match dl_stack.get_content_mut(matching_dl_id) {
+                        Asts(total, used, ..) | Unds(total, used, ..) => {
+                            *used += if is_strong { 2 } else { 1 };
+                            if *used == *total {
+                                dl_stack.delete(matching_dl_id);
+                                this_op_stack.remove(this_op_stack_offset);
+                            }
+                        }
+                        _ => unreachable!(),
+                    };
                 } else {
-                    current_index_op = stack.get(current_index).index_of_next;
+                    if *pot_op {
+                        this_op_stack.push(current_id);
+                    }
+                    current_id_op = dl_stack.get_next_id(current_id);
                 }
             }
-            _ => current_index_op = stack.dl_stack[current_index].index_of_next,
+            _ => current_id_op = dl_stack.get_next_id(current_id),
         }
     }
-
-    // for dl_node in stack.iter() {
-    //     dbg!(dl_node);
-    // }
-    // dbg!(asts_op_stack);
-    let mut out = vec![];
-    // now we can iterate through the stack above stack_bottom
-    let mut ntei_op = stack_bottom.map_or(stack.initial_index, |i| stack.get(i).index_of_next);
-    while let Some(ntei) = ntei_op {
-        let nte = stack.get_mut(ntei);
-        out.push(
-            nte.inline_component
-                .convert_to_inline_content(nte.beginning_char_index, inline_str),
-        );
-        ntei_op = nte.index_of_next;
-    }
-    //then remove everything above
-    if let Some(sb_index) = stack_bottom {
-        stack.delete_stack_above_including(sb_index);
-    }
-    // dbg!(&out);
-    out
+    dl_stack
+        .take_content_above(stack_bottom_id_op)
+        .map(|(isd, pos)| isd.to_inline_content(pos, inline_container))
+        .collect()
 }

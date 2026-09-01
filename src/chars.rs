@@ -140,8 +140,8 @@ pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
 }
 
 type CharPusher = dyn FnMut(char, &mut String);
-pub fn push_chars_with_entities_and_bs<Offset>(
-    peekable_char_indices: &impl PeekableCharIndices<Offset>,
+pub fn push_chars_with_entities_and_bs(
+    peekable_char_indices: &impl PeekableCharIndices,
     string_builder: &mut String,
     in_url: bool,
 ) {

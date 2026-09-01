@@ -1,17 +1,18 @@
 use std::str::CharIndices;
 
-pub trait PeekableCharIndices<Offset>: Iterator<Item = char> + Clone {
+pub trait PeekableCharIndices: Iterator<Item = char> + Clone {
+    type Offset;
     // fn collect_until_offset(&mut self, last_offset: Offset) -> String;
 
-    fn next_and_index(&mut self) -> Option<(Offset, char)>;
+    fn next_and_index(&mut self) -> Option<(Self::Offset, char)>;
 
-    fn peek_and_index(&mut self) -> Option<(Offset, char)>;
+    fn peek_and_index(&mut self) -> Option<(Self::Offset, char)>;
 
     fn peek(&mut self) -> Option<char> {
         self.peek_and_index().map(|(_, c)| c)
     }
 
-    fn offset(&self) -> Offset;
+    fn offset(&self) -> Self::Offset;
 
     // fn is_empty(&mut self) -> bool;
 
@@ -26,16 +27,20 @@ pub trait PeekableCharIndices<Offset>: Iterator<Item = char> + Clone {
         self.next_if(|peeked_c| peeked_c == c)
     }
 
-    fn consume_while(&mut self, func: impl Fn(char) -> bool) {
-        while next_if_helper(self, &func).is_some() {}
+    fn consume_while(&mut self, func: impl Fn(char) -> bool) -> usize {
+        let mut out = 0;
+        while next_if_helper(self, &func).is_some() {
+            out += 1;
+        }
+        out
     }
 
-    fn consume_while_char_eq(&mut self, c: char) {
-        self.consume_while(|peeked_c| peeked_c == c);
+    fn consume_while_char_eq(&mut self, c: char) -> usize {
+        self.consume_while(|peeked_c| peeked_c == c)
     }
 }
 
-fn next_if_helper<S, T: PeekableCharIndices<S>>(
+fn next_if_helper<T: PeekableCharIndices>(
     iter: &mut T,
     func: &impl Fn(char) -> bool,
 ) -> Option<char> {
@@ -94,7 +99,8 @@ impl<'a> BorrowedStringPCI<'a> {
 }
 // the index is not really used as it is returned from the next or peek calls
 // so just return characters from the iterator
-impl<'a> PeekableCharIndices<usize> for BorrowedStringPCI<'a> {
+impl<'a> PeekableCharIndices for BorrowedStringPCI<'a> {
+    type Offset = usize;
     fn next_and_index(&mut self) -> Option<(usize, char)> {
         self.peeked.take().unwrap_or_else(|| self.iter.next())
     }

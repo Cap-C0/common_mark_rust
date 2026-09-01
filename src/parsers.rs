@@ -1,16 +1,16 @@
 //!  The contract for calling parsers is generally like so:
 //!  - the callee can modify the incoming iterator whether it succeeds or fails. This means that it is
 //!    the callers responsibility to clone the iterator and "backtrack" in the case of failure.
-use std::ops::Range;
 
 use crate::{
     parsers::ReferenceLinkType::{Collapsed, Full},
     peekable_char_indices::*,
 };
+use std::ops::Range;
 
 pub type InlineLinkSuffix<T> = (Option<Range<T>>, Option<Range<T>>);
 pub fn parse_inline_suffix<T: Eq>(
-    char_iter: &mut impl PeekableCharIndices<T>,
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
 ) -> Option<InlineLinkSuffix<T>> {
     char_iter.next_if_char_eq('(')?;
 
@@ -48,7 +48,7 @@ pub enum ReferenceLinkType<T> {
 }
 
 pub fn parse_reference_link<T>(
-    char_iter: &mut impl PeekableCharIndices<T>,
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
 ) -> Option<ReferenceLinkType<T>> {
     let mut check_for_collapsed_iter = char_iter.clone();
     if check_for_collapsed_iter.next_if_char_eq('[').is_some()
@@ -61,7 +61,9 @@ pub fn parse_reference_link<T>(
     Some(Full(lab_range))
 }
 
-pub fn parse_link_label<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_link_label<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     // let (_, c) = char_iter.next()?;
     // if c != '[' {
     //     return None;
@@ -94,7 +96,9 @@ pub fn parse_link_label<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Optio
     None
 }
 
-pub fn parse_link_destination<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_link_destination<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     let c_0 = char_iter.peek()?;
     if c_0.is_whitespace() || c_0.is_ascii_control() {
         return None;
@@ -149,7 +153,9 @@ pub fn parse_link_destination<T>(char_iter: &mut impl PeekableCharIndices<T>) ->
 
 // to get the actual text from the link title return Some(x).
 // it is text[1..x] (gets rid of delimiters)
-pub fn parse_link_title<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_link_title<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     let c_0 = char_iter.next()?;
 
     if !"\"\'(".contains(c_0) {
@@ -177,7 +183,7 @@ pub fn parse_link_title<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Optio
 //For purposes of this spec, a scheme is any sequence of 2–32 characters beginning with an ASCII letter and followed by any combination
 //of ASCII letters, digits, or the symbols plus (“+”), period (“.”), or hyphen (“-”).
 //returns Some(x) if the first x characters of the text are a scheme, otherwise None.
-pub fn parse_scheme<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_scheme<T>(char_iter: &mut impl PeekableCharIndices<Offset = T>) -> Option<Range<T>> {
     let range_bottom = char_iter.offset();
     char_iter.next_if(|c| c.is_ascii_alphabetic())?;
     let mut char_count = 1;
@@ -194,7 +200,9 @@ pub fn parse_scheme<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Ra
     None
 }
 
-pub fn parse_uri_autolink<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_uri_autolink<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     let range_bottom = char_iter.offset();
     parse_scheme(char_iter)?;
     char_iter.next_if_char_eq(':')?;
@@ -213,7 +221,7 @@ pub fn parse_uri_autolink<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Opt
 //An email address, for these purposes, is anything that matches the non-normative regex from the HTML5 spec:
 // /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?
 // (?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
-pub fn parse_email<T, P: PeekableCharIndices<T>>(char_iter: &mut P) -> Option<Range<T>> {
+pub fn parse_email<T, P: PeekableCharIndices<Offset = T>>(char_iter: &mut P) -> Option<Range<T>> {
     // let (_, c_0) = char_iter.next()?;
     // if c_0 != '<' {
     //     return None;
@@ -256,7 +264,9 @@ pub fn parse_email<T, P: PeekableCharIndices<T>>(char_iter: &mut P) -> Option<Ra
         .map(|_| range_start..range_end)
 }
 
-pub fn parse_autolink<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<(Range<T>, bool)> {
+pub fn parse_autolink<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<(Range<T>, bool)> {
     let mut al_iter = char_iter.clone();
     let mut em_iter = char_iter.clone();
     if let Some(al_range) = parse_uri_autolink(&mut al_iter) {
@@ -271,14 +281,7 @@ pub fn parse_autolink<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<
 
 // Returns the html tag *after* the first 2 chars,
 // caller must go back 2 chars to get the "real" start
-pub fn parse_html_tag<T: std::ops::Sub<Output = T>>(
-    char_iter: &mut impl PeekableCharIndices<T>,
-) -> Option<Range<T>> {
-    // let (_, c_0) = char_iter.next()?;
-    // if c_0 != '<' {
-    //     return None;
-    // }
-
+pub fn parse_html_tag<T>(char_iter: &mut impl PeekableCharIndices<Offset = T>) -> Option<Range<T>> {
     match char_iter.next()? {
         '/' => parse_closing_tag(char_iter),
         '?' => parse_processing_instruction(char_iter),
@@ -299,7 +302,9 @@ pub fn parse_html_tag<T: std::ops::Sub<Output = T>>(
 
 // These functions are called based on lookahead by callers, so opening brackets are consumed
 // closing brackets are not though.
-pub fn parse_opening_tag<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_opening_tag<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     let range_bottom = char_iter.offset();
     char_iter.consume_while(|c| c.is_ascii_alphanumeric() || c == '-');
 
@@ -320,7 +325,9 @@ pub fn parse_opening_tag<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Opti
         .map(|_| range_bottom..char_iter.offset())
 }
 
-pub fn parse_closing_tag<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_closing_tag<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     let range_bottom = char_iter.offset();
     char_iter.consume_while(|c| c.is_ascii_alphanumeric() || c == '-');
 
@@ -332,7 +339,7 @@ pub fn parse_closing_tag<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Opti
 }
 
 //dont actually need parsing information
-pub fn parse_attribute<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<T> {
+pub fn parse_attribute<T>(char_iter: &mut impl PeekableCharIndices<Offset = T>) -> Option<T> {
     let mut ws_seen = false;
     //initial_white_space
     while char_iter.next_if(|c| " \t\n".contains(c)).is_some() {
@@ -378,7 +385,9 @@ pub fn parse_attribute<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option
     Some(char_iter.offset())
 }
 
-pub fn parse_html_comment<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_html_comment<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     //consume the opening "--"
     let range_bottom = char_iter.offset();
     let c_0 = char_iter.next()?;
@@ -423,7 +432,7 @@ pub fn parse_html_comment<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Opt
 }
 
 pub fn parse_processing_instruction<T>(
-    char_iter: &mut impl PeekableCharIndices<T>,
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
 ) -> Option<Range<T>> {
     let range_bottom = char_iter.offset();
     let mut seen_qm = false;
@@ -440,7 +449,9 @@ pub fn parse_processing_instruction<T>(
 }
 
 //offset not actually used, dont need to track range
-pub fn parse_declaration<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_declaration<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     let range_bottom = char_iter.offset();
     let char_0 = char_iter.next()?;
     if !char_0.is_ascii_alphabetic() {
@@ -454,7 +465,9 @@ pub fn parse_declaration<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Opti
     None
 }
 
-pub fn parse_cdata_section<T>(char_iter: &mut impl PeekableCharIndices<T>) -> Option<Range<T>> {
+pub fn parse_cdata_section<T>(
+    char_iter: &mut impl PeekableCharIndices<Offset = T>,
+) -> Option<Range<T>> {
     // also do the "CDATA[" string recognition.
     let range_bottom = char_iter.offset();
     let to_match = "[CDATA[";
