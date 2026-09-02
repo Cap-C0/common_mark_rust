@@ -1,9 +1,10 @@
 use crate::arena_dll::*;
-use crate::block_structure::LRDTable;
 use crate::chars::*;
 use crate::inline::InlineContent::InlineLink;
 use crate::inline::InlineContent::*;
 use crate::inline::InlineStructureDelimiters::*;
+use crate::inline_str_collection::*;
+use crate::lrd_table::LRDTable;
 use crate::parsers::ReferenceLinkType::Collapsed;
 use crate::parsers::ReferenceLinkType::Full;
 use crate::parsers::*;
@@ -15,85 +16,41 @@ use std::vec;
 
 include!(concat!(env!("OUT_DIR"), "/unicode_categories.rs"));
 
-pub trait CharsInRange: Iterator<Item = char> + Clone {}
-impl<T: Iterator<Item = char> + Clone> CharsInRange for T {}
-
-pub trait LeafContainerInline {
-    type Offset: Add<usize, Output = Self::Offset> + Ord + Clone + Debug + Copy;
-    type Chars<'a>: PeekableCharIndices<Offset = Self::Offset> + Debug
-    where
-        Self: 'a;
-
-    fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable);
-    fn is_empty(&self) -> bool;
-    fn char_iter(&self) -> impl Iterator<Item = char>;
-    fn as_pci(&self) -> impl PeekableCharIndices<Offset = Self::Offset>;
-    fn chars_in_range<'a>(&'a self, range: Range<Self::Offset>) -> Self::Chars<'a>;
-}
-
-impl LeafContainerInline for String {
-    type Offset = usize;
-    type Chars<'a>
-        = BorrowedStringPCI<'a>
-    where
-        Self: 'a;
-    fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable) {
-        for ic in parse_inline(self, lrd_table) {
-            ic.to_html(self, string_builder, lrd_table);
-        }
-    }
-    fn is_empty(&self) -> bool {
-        self.is_empty()
-    }
-    fn char_iter(&self) -> impl Iterator<Item = char> {
-        self.chars()
-    }
-
-    fn as_pci(&self) -> impl PeekableCharIndices<Offset = Self::Offset> {
-        BorrowedStringPCI::new(self)
-    }
-
-    fn chars_in_range<'a>(&'a self, range: Range<Self::Offset>) -> Self::Chars<'a> {
-        BorrowedStringPCI::new(&self[range])
-    }
-}
-
-// pub fn inline_string_to_html(str_in: &str, string_builder: &mut String, lrd_table: &LRDTable) {
-//     for ic in parse_inline(str_in, lrd_table) {
-//         ic.to_html(str_in, string_builder, lrd_table);
-//     }
-// }
-
 // we do not need to enforce multiple new line requirements in these parsers as that will be enforced
 // by paragraphs ending at new lines
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum InlineContent<T: PeekableCharIndices> {
+pub enum InlineContent<I> {
     Softbreak,
     Hardbreak,
-    Text(T),
-    Emph(Vec<InlineContent<T>>),
-    Strong(Vec<InlineContent<T>>),
+    Text(I),
+    Emph(Vec<InlineContent<I>>),
+    Strong(Vec<InlineContent<I>>),
     /// is_image, href, title, link_text
     //TODO: make this work with reference links
-    InlineLink(bool, Option<T>, Option<T>, Vec<InlineContent<T>>),
-    ReferenceLink(bool, String, Vec<InlineContent<T>>),
+    InlineLink(bool, Option<I>, Option<I>, Vec<InlineContent<I>>),
+    ReferenceLink(bool, String, Vec<InlineContent<I>>),
     /// src, title, link_text
     // Image((usize, usize), (usize, usize), Vec<InlineContent>),
     /// href and text, is_email
-    AutoLink(T, bool),
+    AutoLink(I, bool),
     /// start, end char index (exclusive)
-    HTMLTag(T),
-    Code(T),
+    HTMLTag(I),
+    Code(I),
     // for use when swapping memory
     Dummy,
 }
 
-impl<T> InlineContent<T>
+impl<'a, T, C> InlineContent<<T as LeafContainerInline>::Chars<'a>>
 where
-    T: PeekableCharIndices,
+    T: 'a + LeafContainerInline,
 {
     //TODO: Make these all use fmt instead of string?
-    pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
+    pub fn to_html(
+        &self,
+        string_array: &str,
+        string_builder: &mut String,
+        lrd_table: &LRDTable<'a, T>,
+    ) {
         match self {
             Softbreak => string_builder.push('\n'),
             Hardbreak => string_builder.push_str("<br />\n"),
@@ -150,11 +107,11 @@ where
                 }
             }
             ReferenceLink(is_image, normalized_label, inline_contents) => {
-                let (dest, tit_op) = lrd_table.get(normalized_label).unwrap();
+                let (base_il, dest, tit_op) = lrd_table.get(normalized_label).unwrap();
                 if *is_image {
                     string_builder.push_str("<img src=\"");
                     push_chars_with_entities_and_bs(
-                        &BorrowedStringPCI::new(dest),
+                        &base_il.chars_in_range(*dest),
                         string_builder,
                         true,
                     );
@@ -163,10 +120,10 @@ where
                         ic.to_alt_text(string_array, string_builder);
                     }
                     string_builder.push_str("\" ");
-                    if let Some(tit_string) = tit_op {
+                    if let Some(tit_range) = tit_op {
                         string_builder.push_str("title=\"");
                         push_chars_with_entities_and_bs(
-                            &BorrowedStringPCI::new(tit_string),
+                            &base_il.chars_in_range(*tit_range),
                             string_builder,
                             false,
                         );
@@ -176,15 +133,15 @@ where
                 } else {
                     string_builder.push_str("<a href=\"");
                     push_chars_with_entities_and_bs(
-                        &BorrowedStringPCI::new(dest),
+                        &base_il.chars_in_range(*dest),
                         string_builder,
                         true,
                     );
                     string_builder.push('\"');
-                    if let Some(tit) = tit_op {
+                    if let Some(tit_range) = tit_op {
                         string_builder.push_str(" title=\"");
                         push_chars_with_entities_and_bs(
-                            &BorrowedStringPCI::new(tit),
+                            &base_il.chars_in_range(*tit_range),
                             string_builder,
                             false,
                         );
@@ -343,7 +300,7 @@ type DLStack<'a, T> = ArenaDLL<
 //emph markers.
 pub fn parse_inline<'a, C>(
     inline_container: &'a C,
-    lrd_table: &LRDTable,
+    lrd_table: &LRDTable<'a, C>,
 ) -> Vec<InlineContent<C::Chars<'a>>>
 where
     C: LeafContainerInline,
@@ -605,7 +562,8 @@ where
                                 // dbg!(&(start, end));
                                 let my_str: String =
                                     inline_container.chars_in_range(range).collect();
-                                let norm_lab = normalize_label(&my_str);
+                                let norm_lab =
+                                    normalize_label(&inline_container.chars_in_range(range));
                                 // dbg!(lrd_table);
                                 // dbg!(&norm_lab);
                                 if lrd_table.contains_key(&norm_lab) {
@@ -633,10 +591,10 @@ where
                                 let open_brack_offset = (*delimit_stack
                                     .get_position_indicator(matched_node_id))
                                     + if is_image { 1 } else { 0 };
-                                let my_str: String = inline_container
-                                    .chars_in_range(open_brack_offset..char_iter.offset())
-                                    .collect();
-                                let norm_lab = normalize_label(&my_str);
+                                let norm_lab = normalize_label(
+                                    &inline_container
+                                        .chars_in_range(open_brack_offset..char_iter.offset()),
+                                );
                                 if lrd_table.contains_key(&norm_lab) {
                                     let bci =
                                         *delimit_stack.get_position_indicator(matched_node_id);
@@ -666,7 +624,9 @@ where
                         let my_str: String = inline_container
                             .chars_in_range(open_brack_offset..char_iter.offset())
                             .collect();
-                        let norm_lab = normalize_label(&my_str);
+                        let norm_lab = normalize_label(
+                            &inline_container.chars_in_range(open_brack_offset..char_iter.offset()),
+                        );
                         if lrd_table.contains_key(&norm_lab) {
                             let bci = *delimit_stack.get_position_indicator(matched_node_id);
                             let link_displayed = process_emphasis(

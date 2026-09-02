@@ -1,3 +1,6 @@
+use crate::peekable_char_indices::PeekableCharIndices;
+use std::assert_matches;
+
 #[derive(Clone)]
 pub struct UnicodeCaseFoldIter {
     chars: [char; 3],
@@ -25,23 +28,16 @@ pub trait UnicodeCaseFold {
 
 include!(concat!(env!("OUT_DIR"), "/unicode_casefold.rs"));
 
-pub fn normalize_label(label: &str) -> String {
+pub fn normalize_label(char_iter: &impl PeekableCharIndices) -> String {
     let mut lab_out = String::new();
-    dbg!(label);
-    let mut char_iter = label[1..label.len() - 1].chars().peekable();
+    let mut char_iter = char_iter.clone();
     //strip leading whitespace
-    if char_iter.peek().is_none() {
-        return String::new();
+    if char_iter.next_if_char_eq('[').is_none() {
+        panic!()
     }
-    while let Some(c) = char_iter.peek()
-        && c.is_whitespace()
-    {
-        char_iter.next();
-    }
-    if char_iter.peek().is_none() {
-        return String::new();
-    }
+    char_iter.consume_while(|c| " \t".contains(c));
     let mut seen_space = false;
+    let mut last_c = None;
     for c in char_iter {
         if " \n\t".contains(c) {
             seen_space = true
@@ -52,6 +48,9 @@ pub fn normalize_label(label: &str) -> String {
             }
             c.unicode_case_fold().for_each(|cl| lab_out.push(cl));
         }
+        last_c = Some(c);
     }
+    assert_matches!(last_c, Some(']'));
+    lab_out.pop();
     lab_out
 }
