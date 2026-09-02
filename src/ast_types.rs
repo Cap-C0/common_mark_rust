@@ -56,6 +56,35 @@ pub enum Block<T, I> {
     HTMLBlock(T, bool, HTMLEndCondition),
 }
 
+impl<'a, T: Clone, I: 'a + LeafContainerInline> Block<T, I> {
+    pub fn to_parsed_inline_block(
+        &self,
+        lrd_table: &LRDTable<I>,
+    ) -> Block<T, Vec<InlineContent<I::Chars<'a>>>> {
+        match self {
+            Paragraph(il, is_open) => Paragraph(parse_inline(il, lrd_table), *is_open),
+            Heading(il, size) => Heading(parse_inline(il, lrd_table), *size),
+            Document => Document,
+            BlockQuote(b) => BlockQuote(*b),
+            List(is_tight, list_type) => List(*is_tight, *list_type),
+            ListItem(continuable, indent_req) => ListItem(*continuable, *indent_req),
+            ThematicBreak => ThematicBreak,
+            IndentedCodeBlock(is, spcs) => IndentedCodeBlock(is.clone(), spcs.clone()),
+            FencedCodeBlock(t, is_open, mark, inf, indent_count, tilde_count) => FencedCodeBlock(
+                t.clone(),
+                *is_open,
+                *mark,
+                inf.clone(),
+                *indent_count,
+                *tilde_count,
+            ),
+            HTMLBlock(t, is_open, htmlend_condition) => {
+                HTMLBlock(t.clone(), *is_open, htmlend_condition.clone())
+            }
+        }
+    }
+}
+
 impl<T: fmt::Debug, I: fmt::Debug> fmt::Debug for AbstractSyntaxTree<T, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f)?;
@@ -185,33 +214,24 @@ impl<T, I> AbstractSyntaxTree<T, I> {
     }
 }
 
-impl<'a, T, I: 'a + LeafContainerInline> AbstractSyntaxTree<T, I> {
+impl<'a, T: Clone, I: 'a + LeafContainerInline> AbstractSyntaxTree<T, I> {
     pub fn parse_inlines(
         &self,
         lrd_table: &LRDTable<I>,
     ) -> AbstractSyntaxTree<T, Vec<InlineContent<I::Chars<'a>>>> {
         let out = vec![];
         for n in self.nodes {
-            out.push(match n.block {
-                Some(Paragraph(il, is_open)) => Node {
-                    block: Some(Paragraph(parse_inline(il, lrd_table), is_open)),
-                    block_kind: n.block_kind,
-                    depth: n.depth,
-                    parent_id: n.parent_id,
-                },
-                Some(Heading(il, size)) => Node {
-                    block: Some(Heading(parse_inline(il, lrd_table), size)),
-                    block_kind: n.block_kind,
-                    depth: n.depth,
-                    parent_id: n.parent_id,
-                },
-                b => n.clone(),
+            out.push(Node {
+                block: (&n.block.unwrap()).to_parsed_inline_block(lrd_table),
+                block_kind: n.block_kind.clone(),
+                depth: n.depth,
+                parent_id: n.parent_id,
             });
         }
         AbstractSyntaxTree {
             nodes: out,
             head: self.head,
-        };
+        }
     }
 }
 
