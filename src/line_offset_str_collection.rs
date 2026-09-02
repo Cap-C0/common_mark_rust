@@ -7,7 +7,7 @@ use std::{
 use crate::peekable_char_indices::{BorrowedStringPCI, PeekableCharIndices};
 
 //TODO: I think the peeking offset can actually not use options?
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct IndexPosition {
     row: usize,
     offset: Option<usize>,

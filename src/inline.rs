@@ -1,6 +1,6 @@
+use crate::arena_dll::*;
 use crate::block_structure::LRDTable;
 use crate::chars::*;
-use crate::fake_dll::*;
 use crate::inline::InlineContent::InlineLink;
 use crate::inline::InlineContent::*;
 use crate::inline::InlineStructureDelimiters::*;
@@ -19,8 +19,8 @@ pub trait CharsInRange: Iterator<Item = char> + Clone {}
 impl<T: Iterator<Item = char> + Clone> CharsInRange for T {}
 
 pub trait LeafContainerInline {
-    type Offset;
-    type Chars<'a>: PeekableCharIndices<Offset = Self::Offset>
+    type Offset: Add<usize, Output = Self::Offset> + Ord + Clone + Debug + Copy;
+    type Chars<'a>: PeekableCharIndices<Offset = Self::Offset> + Debug
     where
         Self: 'a;
 
@@ -91,8 +91,8 @@ pub enum InlineContent<T: PeekableCharIndices> {
 impl<T> InlineContent<T>
 where
     T: PeekableCharIndices,
-    T::Offset: Ord,
 {
+    //TODO: Make these all use fmt instead of string?
     pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
         match self {
             Softbreak => string_builder.push('\n'),
@@ -301,7 +301,6 @@ enum InlineStructureDelimiters<T: PeekableCharIndices> {
 impl<T> InlineStructureDelimiters<T>
 where
     T: PeekableCharIndices,
-    T::Offset: Add<usize, Output = T::Offset> + Ord + Clone,
 {
     fn convert_to_completed_content(&mut self, start_index: T::Offset) {
         if matches!(self, TextualContent(..) | CompletedContent(..)) {
@@ -309,36 +308,35 @@ where
         }
         *self = match self {
             Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
-                TextualContent(start_index.clone()..(start_index + (*total - *consumed)))
+                TextualContent(start_index..(start_index + (*total - *consumed)))
             }
-            ImgOpen(..) => TextualContent(start_index.clone()..(start_index + 2)),
-            _ => TextualContent(start_index.clone()..(start_index + 1)),
+            ImgOpen(..) => TextualContent(start_index..(start_index + 2)),
+            _ => TextualContent(start_index..(start_index + 1)),
         }
     }
 
-    fn to_inline_content<'a>(
+    fn convert_to_inline_content<'a>(
         self,
         char_offset: T::Offset,
         // base_string: &'a str,
         base_container: &'a impl LeafContainerInline<Offset = T::Offset, Chars<'a> = T>,
     ) -> InlineContent<T> {
         match self {
-            Unds(total, consumed, ..) | Asts(total, consumed, ..) => Text(
-                base_container
-                    .chars_in_range(char_offset.clone()..(char_offset + (total - consumed))),
-            ),
-            TextualContent(range) => Text(base_container.chars_in_range(range)),
-            ImgOpen(..) => {
-                Text(base_container.chars_in_range(char_offset.clone()..(char_offset + 2)))
+            Unds(total, consumed, ..) | Asts(total, consumed, ..) => {
+                Text(base_container.chars_in_range(char_offset..(char_offset + (total - consumed))))
             }
+            TextualContent(range) => Text(base_container.chars_in_range(range)),
+            ImgOpen(..) => Text(base_container.chars_in_range(char_offset..(char_offset + 2))),
             CompletedContent(c) => c,
-            _ => Text(base_container.chars_in_range(char_offset.clone()..(char_offset + 2))),
+            _ => Text(base_container.chars_in_range(char_offset..(char_offset + 1))),
         }
     }
 }
 
-type DLStack<'a, T: LeafContainerInline> =
-    ArenaDLL<InlineStructureDelimiters<T::Chars<'a>>, T::Offset>;
+type DLStack<'a, T> = ArenaDLL<
+    InlineStructureDelimiters<<T as LeafContainerInline>::Chars<'a>>,
+    <T as LeafContainerInline>::Offset,
+>;
 
 //BackTick code spans, auto links, raw_html >
 //brackets in link text >
@@ -349,7 +347,6 @@ pub fn parse_inline<'a, C>(
 ) -> Vec<InlineContent<C::Chars<'a>>>
 where
     C: LeafContainerInline,
-    C::Offset: Add<usize, Output = C::Offset> + Ord + Clone + Debug + Copy,
 {
     let mut delimit_stack: DLStack<C> = ArenaDLL::default();
     let mut char_iter = inline_container.as_pci();
@@ -576,11 +573,11 @@ where
                 // };
 
                 let mut link_made = false;
-                'try_to_make_link: {
+                '_try_to_make_link: {
                     let mut try_to_inline_link_iter = char_iter.clone();
                     let mut try_to_reference_link_iter = char_iter.clone();
                     if let Some((dest_op, tit_op)) =
-                        dbg!(parse_inline_suffix(&mut try_to_inline_link_iter))
+                        parse_inline_suffix(&mut try_to_inline_link_iter)
                     {
                         let bci = *delimit_stack.get_position_indicator(matched_node_id);
 
@@ -601,8 +598,7 @@ where
                         char_iter = try_to_inline_link_iter;
                         text_begin = char_iter.offset();
                         link_made = true;
-                    } else if let Some(rlt) =
-                        dbg!(parse_reference_link(&mut try_to_reference_link_iter))
+                    } else if let Some(rlt) = parse_reference_link(&mut try_to_reference_link_iter)
                     {
                         match rlt {
                             Full(range) => {
@@ -634,14 +630,11 @@ where
                                 }
                             }
                             Collapsed => {
-                                let Some(after_opener_start_offset) = delimit_stack
-                                    .get_next_id(matched_node_id)
-                                    .map(|id| delimit_stack.get_position_indicator(id))
-                                else {
-                                    break 'try_to_make_link;
-                                };
+                                let open_brack_offset = (*delimit_stack
+                                    .get_position_indicator(matched_node_id))
+                                    + if is_image { 1 } else { 0 };
                                 let my_str: String = inline_container
-                                    .chars_in_range(*after_opener_start_offset..char_index)
+                                    .chars_in_range(open_brack_offset..char_iter.offset())
                                     .collect();
                                 let norm_lab = normalize_label(&my_str);
                                 if lrd_table.contains_key(&norm_lab) {
@@ -667,14 +660,11 @@ where
                             }
                         }
                     } else {
-                        let Some(after_opener_start_offset) = delimit_stack
-                            .get_next_id(matched_node_id)
-                            .map(|id| delimit_stack.get_position_indicator(id))
-                        else {
-                            break 'try_to_make_link;
-                        };
+                        let open_brack_offset = (*delimit_stack
+                            .get_position_indicator(matched_node_id))
+                            + if is_image { 1 } else { 0 };
                         let my_str: String = inline_container
-                            .chars_in_range(*after_opener_start_offset..char_index)
+                            .chars_in_range(open_brack_offset..char_iter.offset())
                             .collect();
                         let norm_lab = normalize_label(&my_str);
                         if lrd_table.contains_key(&norm_lab) {
@@ -694,7 +684,20 @@ where
                         }
                     }
                 }
-                if !link_made {
+                if link_made {
+                    delimit_stack.take_content_at_id(matched_node_id);
+                    if !is_image {
+                        let mut before_opener_id_op = delimit_stack.get_prev_id(matched_node_id);
+                        while let Some(before_opener_id) = before_opener_id_op {
+                            if let LinkOpen(b @ true) =
+                                delimit_stack.get_content_mut(before_opener_id)
+                            {
+                                *b = false;
+                            }
+                            before_opener_id_op = delimit_stack.get_prev_id(before_opener_id)
+                        }
+                    }
+                } else {
                     let start_index = *delimit_stack.get_position_indicator(matched_node_id);
                     delimit_stack
                         .get_content_mut(matched_node_id)
@@ -702,16 +705,6 @@ where
                     delimit_stack
                         .push_back(char_index, TextualContent(char_index..char_iter.offset()));
                     text_begin = char_iter.offset();
-                } else if !is_image {
-                    //disable earlier link openers
-                    let mut before_opener_id_op = delimit_stack.get_prev_id(matched_node_id);
-                    while let Some(before_opener_id) = before_opener_id_op {
-                        if let LinkOpen(b @ true) = delimit_stack.get_content_mut(before_opener_id)
-                        {
-                            *b = false;
-                        }
-                        before_opener_id_op = delimit_stack.get_prev_id(before_opener_id)
-                    }
                 }
                 //could technically be ')', but doesnt matter for purposes of is_punc/is_not_punc
                 preceding_char = ']';
@@ -771,21 +764,15 @@ fn process_emphasis<'a, C>(
 ) -> Vec<InlineContent<C::Chars<'a>>>
 where
     C: LeafContainerInline,
-    C::Offset: Add<usize, Output = C::Offset> + Ord + Clone + Debug + Copy,
 {
     // todo!();
     let stack_bottom_char_offset: Option<C::Offset> =
         stack_bottom_id_op.map(|id| *dl_stack.get_position_indicator(id));
-    // dbg!("processing emph");
-    // dbg!(&stack);
-    // // dbg!(&stack_bottom);
-    // let mut current_index_op =
-    let mut current_id_op = if let Some(sbid) = stack_bottom_id_op
-        && let Some(sbnxt_id) = dl_stack.get_next_id(sbid)
-    {
-        Some(sbnxt_id)
+
+    let mut current_id_op = if let Some(stack_bottom_id) = stack_bottom_id_op {
+        dl_stack.get_next_id(stack_bottom_id)
     } else {
-        None
+        dl_stack.get_start_id()
     };
 
     //     stack_bottom.map_or(stack.initial_index, |i| stack.get_content(i).index_of_next);
@@ -807,6 +794,7 @@ where
     //
     // //TODO: DRY THIS SOMEHOW, UNDS AND ASTS are the same except variable names
     while let Some(current_id) = current_id_op {
+        // dbg!(dl_stack.get_content(current_id));
         match dl_stack.get_content(current_id) {
             Asts(total_count, consumed, pot_op, pot_close)
             | Unds(total_count, consumed, pot_op, pot_close) => {
@@ -887,7 +875,7 @@ where
                         if start_pos.is_none() {
                             start_pos = Some(pos);
                         }
-                        emph_children.push(isd.to_inline_content(pos, inline_container));
+                        emph_children.push(isd.convert_to_inline_content(pos, inline_container));
                     }
                     // also clear out any delimiters on our local stack that we took inside the emphasis
                     while this_op_stack
@@ -940,6 +928,6 @@ where
     }
     dl_stack
         .take_content_above(stack_bottom_id_op)
-        .map(|(isd, pos)| isd.to_inline_content(pos, inline_container))
+        .map(|(isd, pos)| isd.convert_to_inline_content(pos, inline_container))
         .collect()
 }

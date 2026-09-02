@@ -1,7 +1,9 @@
+use std::fmt::Debug;
+use std::ops::Add;
 use std::str::CharIndices;
 
 pub trait PeekableCharIndices: Iterator<Item = char> + Clone {
-    type Offset;
+    type Offset: Add<usize, Output = Self::Offset> + Ord + Clone + Debug + Copy;
     // fn collect_until_offset(&mut self, last_offset: Offset) -> String;
 
     fn next_and_index(&mut self) -> Option<(Self::Offset, char)>;

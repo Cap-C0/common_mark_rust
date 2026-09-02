@@ -1,3 +1,5 @@
+use core::fmt;
+
 #[derive(Debug, Copy, PartialEq, Eq, Clone)]
 pub struct DLLNodeID(usize);
 
@@ -31,7 +33,7 @@ impl<T, O: Ord> DLLnode<T, O> {
 // we will be approxiamating a double linked list in rust by having each item in the list keep
 // track of the index of the next item.
 // TODO: make this in to a more proper arena using ops and stuff
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ArenaDLL<T, O: Ord> {
     // beginning_char_offset,end_char_offset, dl, index_of_prev, index_of_next
     nodes: Vec<DLLnode<T, O>>,
@@ -48,6 +50,22 @@ impl<T, O: Ord> Default for ArenaDLL<T, O> {
             start_id: None,
             end_id: None,
         }
+    }
+}
+impl<T: fmt::Debug, O: Ord + fmt::Debug> fmt::Debug for ArenaDLL<T, O> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "DLL State:")?;
+        let mut current_node_id_op = self.start_id;
+        while let Some(current_node_id) = current_node_id_op {
+            writeln!(
+                f,
+                "{:?}: {:?}",
+                self.nodes[current_node_id.0].underlying_position,
+                self.nodes[current_node_id.0].content
+            )?;
+            current_node_id_op = self.nodes[current_node_id.0].id_of_next;
+        }
+        Ok(())
     }
 }
 
@@ -79,9 +97,6 @@ impl<T, O: Ord> ArenaDLL<T, O> {
     pub fn get_start_id(&self) -> Option<DLLNodeID> {
         self.start_id
     }
-    // pub fn get_last_mut(&mut self) -> Option<&mut Option<T>> {
-    //     self.end_id.map(|id| &mut self.nodes[id.0].content)
-    // }
 
     pub fn get_content(&self, node_id: DLLNodeID) -> &T {
         if let Some(ref t_out) = self.nodes[node_id.0].content {
@@ -113,7 +128,7 @@ impl<T, O: Ord> ArenaDLL<T, O> {
 
     pub fn take_content_above(&mut self, bottom_node_id: Option<DLLNodeID>) -> DLLIter<'_, T, O> {
         DLLIter {
-            current_id_op: bottom_node_id.map_or(self.start_id, |f| Some(f)),
+            current_id_op: bottom_node_id.map_or(self.start_id, |f| self.get_next_id(f)),
             base_arena: self,
             last_id: None,
         }
