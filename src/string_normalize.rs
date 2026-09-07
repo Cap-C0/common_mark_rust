@@ -27,7 +27,6 @@ include!(concat!(env!("OUT_DIR"), "/unicode_casefold.rs"));
 
 pub fn normalize_label(label: &str) -> String {
     let mut lab_out = String::new();
-    dbg!(label);
     let mut char_iter = label[1..label.len() - 1].chars().peekable();
     //strip leading whitespace
     if char_iter.peek().is_none() {

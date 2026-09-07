@@ -34,7 +34,7 @@ impl TrieNode {
     pub fn add_str(&mut self, string_in: Chars, value: Vec<char>) {
         let mut current: &mut Self = self;
         for nxt_char in string_in {
-            if current.children.contains_key(&nxt_char) {
+            if !current.children.contains_key(&nxt_char) {
                 let new_trie = TrieNode {
                     children: HashMap::new(),
                     value: None,

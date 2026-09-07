@@ -313,7 +313,7 @@ pub fn parse_opening_tag<T>(
         *char_iter = attribute_iter.clone();
     }
 
-    // dbg!(&char_iter);
+    // (&char_iter);
     char_iter.consume_while(|c| " \t\n".contains(c));
 
     //optional
@@ -368,12 +368,11 @@ pub fn parse_attribute<T>(char_iter: &mut impl PeekableCharIndices<Offset = T>) 
     char_iter.consume_while(|c| " \t\n".contains(c));
     let first_c_of_val = char_iter.peek()?;
     //quoted attribute
-    if dbg!("\"\'".contains(dbg!(first_c_of_val))) {
+    if "\"\'".contains(first_c_of_val) {
         char_iter.next();
         while let Some((ci, c)) = char_iter.next_and_index() {
-            dbg!(c);
             if c == first_c_of_val {
-                // dbg!(&char_iter);
+                // (&char_iter);
                 return Some(ci);
             }
         }
@@ -477,7 +476,7 @@ pub fn parse_cdata_section<T>(
     let zip_iter = char_iter.take(to_match.len()).zip(to_match.chars());
 
     for (c_in, c_to_match) in zip_iter {
-        if dbg!(c_in) != dbg!(c_to_match) {
+        if (c_in) != (c_to_match) {
             return None;
         }
     }

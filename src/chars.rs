@@ -221,7 +221,7 @@ pub fn push_chars_with_entities_and_bs(
                         'dec_loop: while dec_char_count < 8
                             && let Some(c_nxt) = peekable_char_indices.next()
                         {
-                            // dbg!(&dec_char_count);
+                            // (&dec_char_count);
                             if c_nxt == ';' {
                                 if dec_char_count == 0 {
                                     break 'dec_loop;

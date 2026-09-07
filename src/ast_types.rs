@@ -174,7 +174,7 @@ impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
 }
 impl AbstractSyntaxTree<String> {
     pub fn to_html(&self, lrd_table: &LRDTable) -> String {
-        dbg!("calling_to_html!");
+        ("calling_to_html!");
         let mut str_out = String::new();
         self.to_html_helper(self.head, false, &mut str_out, lrd_table);
         str_out

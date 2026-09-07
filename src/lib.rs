@@ -19,11 +19,11 @@ pub fn markdown_to_html(markdown: &str) -> String {
 
     let (ast, lrd_table) = create_block_structure(markdown);
 
-    dbg!(&ast);
-    // dbg!(&lrd_table);
+    // (&ast);
+    // (&lrd_table);
     // document.parse_inlines(&lrd_table);
     //
-    // dbg!(&document);
+    // (&document);
 
     ast.to_html(&lrd_table)
 }

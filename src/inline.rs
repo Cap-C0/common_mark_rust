@@ -602,12 +602,12 @@ where
                     {
                         match rlt {
                             Full(range) => {
-                                // dbg!(&(start, end));
+                                // (&(start, end));
                                 let my_str: String =
                                     inline_container.chars_in_range(range).collect();
                                 let norm_lab = normalize_label(&my_str);
-                                // dbg!(lrd_table);
-                                // dbg!(&norm_lab);
+                                // (lrd_table);
+                                // (&norm_lab);
                                 if lrd_table.contains_key(&norm_lab) {
                                     let bci =
                                         *delimit_stack.get_position_indicator(matched_node_id);
@@ -794,7 +794,7 @@ where
     //
     // //TODO: DRY THIS SOMEHOW, UNDS AND ASTS are the same except variable names
     while let Some(current_id) = current_id_op {
-        // dbg!(dl_stack.get_content(current_id));
+        // (dl_stack.get_content(current_id));
         match dl_stack.get_content(current_id) {
             Asts(total_count, consumed, pot_op, pot_close)
             | Unds(total_count, consumed, pot_op, pot_close) => {
