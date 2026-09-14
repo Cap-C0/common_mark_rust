@@ -1,3 +1,5 @@
+use core::fmt;
+
 use phf::phf_map;
 
 use crate::peekable_char_indices::*;
@@ -24,9 +26,12 @@ impl StaticTrieNode {
     }
 }
 
-pub fn push_character_in_uri(c: char, string_builder: &mut String) {
+pub fn write_character_in_uri<W: fmt::Write + ?Sized>(
+    c: char,
+    string_builder: &mut W,
+) -> fmt::Result {
     if "!#$&'()*+,/:;=?@-._~".contains(c) || c.is_ascii_alphanumeric() {
-        push_html_reserved_char(c, string_builder);
+        write_html_reserved_char(c, string_builder)?;
     } else {
         // it needs to be utf 8 encoded.
         // TODO: fix this (not doing omlats right?)
@@ -34,57 +39,63 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
         if as_u32 <= 0x007F {
             let ys = as_u32 >> 4;
             let zs = as_u32 & 0xF;
-            string_builder.push('%');
-            string_builder.push(std::char::from_digit(ys, 16).unwrap().to_ascii_uppercase());
-            string_builder.push(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase());
+            string_builder.write_char('%')?;
+            string_builder
+                .write_char(std::char::from_digit(ys, 16).unwrap().to_ascii_uppercase())?;
+            string_builder
+                .write_char(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase())?;
         } else if as_u32 <= 0x07FF {
             let xs = as_u32 >> 8;
             let ys = (as_u32 >> 4) & 0xF;
             let zs = as_u32 & 0xF;
-            string_builder.push('%');
-            string_builder.push(
+            string_builder.write_char('%')?;
+            string_builder.write_char(
                 std::char::from_digit(0xc | (xs >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push(
+            )?;
+            string_builder.write_char(
                 std::char::from_digit(((xs & 0x3) << 2) | (ys >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push('%');
-            string_builder.push(
+            )?;
+            string_builder.write_char('%')?;
+            string_builder.write_char(
                 std::char::from_digit(0x8 | (ys & 0x3), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase());
+            )?;
+            string_builder
+                .write_char(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase())?;
         } else if as_u32 <= 0xFFFF {
             let ws = as_u32 >> 12;
             let xs = (as_u32 >> 8) & 0xF;
             let ys = (as_u32 >> 4) & 0xF;
             let zs = as_u32 & 0xF;
-            string_builder.push('%');
-            string_builder.push(std::char::from_digit(0xE, 16).unwrap().to_ascii_uppercase());
-            string_builder.push(std::char::from_digit(ws, 16).unwrap().to_ascii_uppercase());
-            string_builder.push('%');
-            string_builder.push(
+            string_builder.write_char('%')?;
+            string_builder
+                .write_char(std::char::from_digit(0xE, 16).unwrap().to_ascii_uppercase())?;
+            string_builder
+                .write_char(std::char::from_digit(ws, 16).unwrap().to_ascii_uppercase())?;
+            string_builder.write_char('%')?;
+            string_builder.write_char(
                 std::char::from_digit(0xc | (xs >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push(
+            )?;
+            string_builder.write_char(
                 std::char::from_digit(((xs & 0x3) << 2) | (ys >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push('%');
-            string_builder.push(
+            )?;
+            string_builder.write_char('%')?;
+            string_builder.write_char(
                 std::char::from_digit(0x8 | (ys & 0x3), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase());
+            )?;
+            string_builder
+                .write_char(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase())?;
         } else if as_u32 <= 0x10FFFF {
             let us = as_u32 >> 20;
             let vs = (as_u32 >> 16) & 0xF;
@@ -92,43 +103,50 @@ pub fn push_character_in_uri(c: char, string_builder: &mut String) {
             let xs = (as_u32 >> 8) & 0xF;
             let ys = (as_u32 >> 4) & 0xF;
             let zs = as_u32 & 0xF;
-            string_builder.push('%');
-            string_builder.push(std::char::from_digit(0xF, 16).unwrap().to_ascii_uppercase());
-            string_builder.push(
+            string_builder.write_char('%')?;
+            string_builder
+                .write_char(std::char::from_digit(0xF, 16).unwrap().to_ascii_uppercase())?;
+            string_builder.write_char(
                 std::char::from_digit(((us & 0x3) << 2) | (vs >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push('%');
-            string_builder.push(
+            )?;
+            string_builder.write_char('%')?;
+            string_builder.write_char(
                 std::char::from_digit(0x8 | (vs & 0x3), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push(std::char::from_digit(ws, 16).unwrap().to_ascii_uppercase());
-            string_builder.push('%');
-            string_builder.push(
+            )?;
+            string_builder
+                .write_char(std::char::from_digit(ws, 16).unwrap().to_ascii_uppercase())?;
+            string_builder.write_char('%')?;
+            string_builder.write_char(
                 std::char::from_digit(0xc | (xs >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push(
+            )?;
+            string_builder.write_char(
                 std::char::from_digit(((xs & 0x3) << 2) | (ys >> 2), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push('%');
-            string_builder.push(
+            )?;
+            string_builder.write_char('%')?;
+            string_builder.write_char(
                 std::char::from_digit(0x8 | (ys & 0x3), 16)
                     .unwrap()
                     .to_ascii_uppercase(),
-            );
-            string_builder.push(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase());
+            )?;
+            string_builder
+                .write_char(std::char::from_digit(zs, 16).unwrap().to_ascii_uppercase())?;
         }
     }
+    Ok(())
 }
 
-pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
+pub fn write_html_reserved_char<W: fmt::Write + ?Sized>(
+    c: char,
+    string_builder: &mut W,
+) -> fmt::Result {
     let x = match c {
         '<' => "&lt;",
         '>' => "&gt;",
@@ -136,19 +154,20 @@ pub fn push_html_reserved_char(c: char, string_builder: &mut String) {
         '"' => "&quot;",
         _ => &c.to_string(),
     };
-    string_builder.push_str(x);
+    string_builder.write_str(x)?;
+    Ok(())
 }
 
-type CharPusher = dyn FnMut(char, &mut String);
-pub fn push_chars_with_entities_and_bs(
+type CharPusher<W> = fn(char, &mut W) -> fmt::Result;
+pub fn write_chars_with_entities_and_bs<'a, W: fmt::Write + ?Sized>(
     peekable_char_indices: &impl PeekableCharIndices,
-    string_builder: &mut String,
+    document_out: &'a mut W,
     in_url: bool,
-) {
-    let mut char_push_fn: Box<CharPusher> = if in_url {
-        Box::new(push_character_in_uri)
+) -> fmt::Result {
+    let char_push_fn: CharPusher<W> = if in_url {
+        write_character_in_uri
     } else {
-        Box::new(push_html_reserved_char)
+        write_html_reserved_char
     };
     let mut peekable_char_indices = peekable_char_indices.clone();
     while let Some(c) = peekable_char_indices.next() {
@@ -159,12 +178,12 @@ pub fn push_chars_with_entities_and_bs(
                     && let Some(hex_char_0) = percent_iter.next_if(|c| c.is_ascii_hexdigit())
                     && let Some(hex_char_1) = percent_iter.next_if(|c| c.is_ascii_hexdigit())
                 {
-                    string_builder.push('%');
-                    string_builder.push(hex_char_0);
-                    string_builder.push(hex_char_1);
+                    document_out.write_char('%')?;
+                    document_out.write_char(hex_char_0)?;
+                    document_out.write_char(hex_char_1)?;
                     peekable_char_indices = percent_iter;
                 } else {
-                    char_push_fn(c, string_builder);
+                    char_push_fn(c, document_out)?;
                 }
             }
             '\\' => {
@@ -172,7 +191,7 @@ pub fn push_chars_with_entities_and_bs(
                     .peek()
                     .is_none_or(|c| !c.is_ascii_punctuation())
                 {
-                    char_push_fn('\\', string_builder);
+                    char_push_fn('\\', document_out)?;
                 }
             }
             '&' => {
@@ -266,21 +285,22 @@ pub fn push_chars_with_entities_and_bs(
                 match char_result {
                     ResultChar::Array(chars_out) => {
                         for c in chars_out {
-                            char_push_fn(*c, string_builder);
+                            char_push_fn(*c, document_out)?;
                         }
                     }
-                    ResultChar::Single(c) => char_push_fn(c, string_builder),
+                    ResultChar::Single(c) => char_push_fn(c, document_out)?,
                     ResultChar::Fail => {
-                        char_push_fn('&', string_builder);
+                        char_push_fn('&', document_out)?;
                         peekable_char_indices = amp_iter;
                     }
                 }
             }
             _ => {
-                char_push_fn(c, string_builder);
+                char_push_fn(c, document_out)?;
             }
         }
     }
+    Ok(())
 }
 
 pub static REPLACEMENT_CHARACTER: char = char::from_u32(0xFFFD).unwrap();

@@ -43,10 +43,22 @@
 - [x] better char writing ergonomics.
 
 
-- [ ] ACTUALLY MAKE A FREAKING WEBPAGE WITH THIS PARSER I MADE!!!
+- [x] ACTUALLY MAKE A FREAKING WEBPAGE WITH THIS PARSER I MADE!!!
 
+- [ ] add latex equation functionality ($)
+  - [ ] server side rendering with katex.
+- [ ] general code highlighting stuff too.
+- [ ] asynchronous abled formatter
+- [ ] fix that freaking compiler bug idk,
+- [ ] GHMD compliance!
+  - [ ] make inlines Vec\<String\>
+    - [ ] make an iterator over that that fits the types we set up.
+  - [ ] could do tables in process_paragraph? (nope)
+  - [ ] The table creation is decided when the 2nd line (the delimiter row) is read, it can look for a paragraph above and "steal" a last line that matches spec.
+- [ ] emoji?!
+ 
 Improvements/performance optimization:
-- [ ] make Block use an Arena! 
+- [x] make Block use an Arena! 
 - [ ] make all inlines/code blocks use the same stuff.
 - [ ] put blocks in Document inside of refcounts. This should allow multiple access to 
       it without having to "climb" down the tree every time.

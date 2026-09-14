@@ -2,10 +2,10 @@ use core::fmt;
 use std::option::Option::{None as Leaf, Some as Container};
 
 use crate::{
-    ast_types::{Block::*, ListType::*},
+    ast_types::{Block::*, HTMLEndCondition::BlankLine, ListType::*},
     block_structure::LRDTable,
-    chars::{push_chars_with_entities_and_bs, push_html_reserved_char},
-    inline::LeafContainerInline,
+    chars::{write_chars_with_entities_and_bs, write_html_reserved_char},
+    inline::{InlineContent, LeafContainerInline, parse_inline},
     peekable_char_indices::BorrowedStringPCI,
 };
 
@@ -14,8 +14,8 @@ pub struct NodeId(usize);
 
 //TODO: make a nice debug for this.
 #[derive(PartialEq, Eq)]
-pub struct AbstractSyntaxTree<T> {
-    nodes: Vec<Node<T>>,
+pub struct AbstractSyntaxTree<S, I> {
+    nodes: Vec<Node<S, I>>,
     head: NodeId,
 }
 
@@ -29,40 +29,61 @@ pub struct AbstractSyntaxTree<T> {
 type BlockKind = Option<Vec<NodeId>>;
 
 #[derive(Debug, PartialEq, Eq)]
-struct Node<T> {
-    block: Block<T>,
+struct Node<S, I> {
+    block: Block<S, I>,
     block_kind: BlockKind,
     depth: usize,
     parent_id: Option<NodeId>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Block<T> {
+pub enum Block<S, I> {
     Document,
     BlockQuote(bool),
     /// (tight, lt,)
     List(bool, ListType),
     /// (continuable, indent requirement)
     ListItem(bool, usize),
-    Heading(T, usize),
-    Paragraph(T, bool),
+    Heading(I, usize),
+    Paragraph(I, bool),
     ThematicBreak,
     /// actualy chars, unrealized blanks
-    IndentedCodeBlock(T, T), // unrealized blank lines
+    IndentedCodeBlock(S, S), // unrealized blank lines
     /// (contents, is_open, marking char, info_string, indend_count, tilde_count)
-    FencedCodeBlock(T, bool, char, T, usize, usize),
+    FencedCodeBlock(S, bool, char, S, usize, usize),
     /// (characters,is_open, end_condition, )
-    HTMLBlock(String, bool, HTMLEndCondition),
+    HTMLBlock(S, bool, HTMLEndCondition), // these end conditions could be optimized a lot more
 }
 
-impl<T: fmt::Debug> fmt::Debug for AbstractSyntaxTree<T> {
+impl Block<String, String> {
+    fn to_inline<'a>(
+        &'a self,
+        lrd_table: &LRDTable,
+    ) -> Block<&'a str, Vec<InlineContent<<String as LeafContainerInline>::Chars<'a>>>> {
+        match self {
+            Document => Document,
+            BlockQuote(b) => BlockQuote(*b),
+            List(b, list_type) => List(*b, *list_type),
+            ListItem(b, u) => ListItem(*b, *u),
+            Heading(s, u) => Heading(parse_inline(s, lrd_table), *u),
+            Paragraph(s, b) => Paragraph(parse_inline(s, lrd_table), *b),
+            ThematicBreak => ThematicBreak,
+            IndentedCodeBlock(s, ubl) => IndentedCodeBlock(s, ubl),
+            //TODO: use something like pyg here?
+            FencedCodeBlock(s, io, mc, is, ic, tc) => FencedCodeBlock(s, *io, *mc, is, *ic, *tc),
+            HTMLBlock(s, b, _htmlend_condition) => HTMLBlock(s, *b, BlankLine),
+        }
+    }
+}
+
+impl<S: fmt::Debug, I: fmt::Debug> fmt::Debug for AbstractSyntaxTree<S, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f)?;
         self.fmt_helper(f, self.head, 0)
     }
 }
 
-impl<T: fmt::Debug> AbstractSyntaxTree<T> {
+impl<S: fmt::Debug, I: fmt::Debug> AbstractSyntaxTree<S, I> {
     fn fmt_helper(
         &self,
         f: &mut fmt::Formatter<'_>,
@@ -91,12 +112,12 @@ impl<T: fmt::Debug> AbstractSyntaxTree<T> {
     }
 }
 
-impl<T: LeafContainerInline> Default for AbstractSyntaxTree<T> {
+impl<S: LeafContainerInline, I: LeafContainerInline> Default for AbstractSyntaxTree<S, I> {
     fn default() -> Self {
         Self::new()
     }
 }
-impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
+impl<S: LeafContainerInline, I: LeafContainerInline> AbstractSyntaxTree<S, I> {
     pub fn new() -> Self {
         AbstractSyntaxTree {
             nodes: vec![Node {
@@ -109,7 +130,7 @@ impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
         }
     }
 
-    pub fn add_new_node(&mut self, parent: NodeId, block: Block<T>) -> NodeId {
+    pub fn add_new_node(&mut self, parent: NodeId, block: Block<S, I>) -> NodeId {
         let parent_depth = self.nodes[parent.0].depth;
         let block_kind = match block {
             BlockQuote(..) | List(..) | ListItem(..) => Container(vec![]),
@@ -136,15 +157,15 @@ impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
         // }
     }
 
-    pub fn get_block(&mut self, node_id: NodeId) -> &mut Block<T> {
+    pub fn get_block(&mut self, node_id: NodeId) -> &mut Block<S, I> {
         &mut self.nodes[node_id.0].block
     }
 
-    pub fn get_block_ref(&self, node_id: NodeId) -> &Block<T> {
+    pub fn get_block_ref(&self, node_id: NodeId) -> &Block<S, I> {
         &self.nodes[node_id.0].block
     }
 
-    pub fn replace_block(&mut self, node_id: NodeId, new_block: Block<T>) {
+    pub fn replace_block(&mut self, node_id: NodeId, new_block: Block<S, I>) {
         self.nodes[node_id.0].block_kind = match new_block {
             BlockQuote(..) | List(..) | ListItem(..) => Container(vec![]),
             Document => unreachable!(),
@@ -172,140 +193,179 @@ impl<T: LeafContainerInline> AbstractSyntaxTree<T> {
         }
     }
 }
-impl AbstractSyntaxTree<String> {
-    pub fn to_html(&self, lrd_table: &LRDTable) -> String {
-        ("calling_to_html!");
-        let mut str_out = String::new();
-        self.to_html_helper(self.head, false, &mut str_out, lrd_table);
-        str_out
+
+impl AbstractSyntaxTree<String, String> {
+    pub fn parse_inlines<'a>(
+        &'a self,
+        lrd_table: &LRDTable,
+    ) -> AbstractSyntaxTree<&'a str, Vec<InlineContent<<String as LeafContainerInline>::Chars<'a>>>>
+    {
+        AbstractSyntaxTree {
+            nodes: self
+                .nodes
+                .iter()
+                .map(|n| Node {
+                    block: n.block.to_inline(lrd_table),
+                    block_kind: n.block_kind.clone(),
+                    depth: n.depth,
+                    parent_id: n.parent_id,
+                })
+                .collect(),
+            head: self.head,
+        }
+    }
+}
+
+impl<'a>
+    AbstractSyntaxTree<&'a str, Vec<InlineContent<<String as LeafContainerInline>::Chars<'a>>>>
+{
+    pub fn write_html<W: fmt::Write + ?Sized>(
+        &'a self,
+        lrd_table: &LRDTable,
+        document_out: &mut W,
+    ) -> fmt::Result {
+        // let mut linl = true;
+        let mut cr = true;
+        self.write_html_helper(self.head, false, document_out, lrd_table, &mut cr)?;
+        Ok(())
     }
 
-    pub fn to_html_helper(
+    ///cr: carriage return, basically was the last character written a \n
+    fn write_html_helper<W: fmt::Write + ?Sized>(
         &self,
         current_node: NodeId,
         in_tight_list: bool,
-        string_builder: &mut String,
+        document_out: &mut W,
         lrd_table: &LRDTable,
-    ) {
+        cr: &mut bool,
+    ) -> fmt::Result {
         let child_op = if let Container(ref children) = self.nodes[current_node.0].block_kind {
             Some(children)
         } else {
             None
         };
+        if !*cr && !matches!(self.nodes[current_node.0].block, Paragraph(..)) {
+            document_out.write_char('\n')?;
+        }
         match &self.nodes[current_node.0].block {
             Document => {
                 for node_id in child_op.unwrap() {
-                    self.to_html_helper(*node_id, false, string_builder, lrd_table);
+                    self.write_html_helper(*node_id, false, document_out, lrd_table, cr)?;
                 }
             }
             BlockQuote(_) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                string_builder.push_str("<blockquote>\n");
+                document_out.write_str("<blockquote>\n")?;
+                *cr = true;
                 for node_id in child_op.unwrap() {
-                    self.to_html_helper(*node_id, false, string_builder, lrd_table);
+                    self.write_html_helper(*node_id, false, document_out, lrd_table, cr)?;
                 }
-                string_builder.push_str("</blockquote>\n");
+                document_out.write_str("</blockquote>\n")?;
+                *cr = true;
             }
-            List(is_tight, list_type) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                match list_type {
-                    OrderedList(_, n) => {
-                        if *n != 1 {
-                            string_builder.push_str(&format!("<ol start=\"{}\">\n", n));
-                        } else {
-                            string_builder.push_str("<ol>\n");
-                        }
-                        for node_id in child_op.unwrap() {
-                            self.to_html_helper(*node_id, *is_tight, string_builder, lrd_table);
-                        }
-                        string_builder.push_str("</ol>\n");
+            List(is_tight, list_type) => match list_type {
+                OrderedList(_, n) => {
+                    if *n != 1 {
+                        document_out.write_str(&format!("<ol start=\"{}\">\n", n))?;
+                    } else {
+                        document_out.write_str("<ol>\n")?;
                     }
-                    UnorderedList(_) => {
-                        string_builder.push_str("<ul>\n");
-                        for node_id in child_op.unwrap() {
-                            self.to_html_helper(*node_id, *is_tight, string_builder, lrd_table);
-                        }
-                        string_builder.push_str("</ul>\n");
+                    *cr = true;
+                    for node_id in child_op.unwrap() {
+                        self.write_html_helper(*node_id, *is_tight, document_out, lrd_table, cr)?;
                     }
+                    document_out.write_str("</ol>\n")?;
+                    *cr = true;
                 }
-            }
+                UnorderedList(_) => {
+                    document_out.write_str("<ul>\n")?;
+                    *cr = true;
+                    for node_id in child_op.unwrap() {
+                        self.write_html_helper(*node_id, *is_tight, document_out, lrd_table, cr)?;
+                    }
+                    document_out.write_str("</ul>\n")?;
+                    *cr = true;
+                }
+            },
             ListItem(..) => {
-                string_builder.push_str("<li>");
+                document_out.write_str("<li>")?;
+                *cr = false;
                 for node_id in child_op.unwrap() {
-                    self.to_html_helper(*node_id, in_tight_list, string_builder, lrd_table);
+                    self.write_html_helper(*node_id, in_tight_list, document_out, lrd_table, cr)?;
                 }
-                string_builder.push_str("</li>\n");
+                // if !*cr {
+                //     document_out.write_char('\n')?;
+                // }
+                document_out.write_str("</li>\n")?;
+                *cr = true;
             }
             Heading(il, h) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
+                // if !document_out.is_empty() && !document_out.ends_with('\n') {
+                //     document_out.write_char('\n')?;
+                // }
+                document_out.write_str(&format!("<h{}>", h))?;
+                for il in il {
+                    il.write_html(document_out, lrd_table)?;
                 }
-                string_builder.push_str(&format!("<h{}>", h));
-                il.to_html(string_builder, lrd_table);
-                string_builder.push_str(&format!("</h{}>\n", h));
+                document_out.write_str(&format!("</h{}>\n", h))?;
+                *cr = true;
             }
             Paragraph(il, _) => {
                 if !in_tight_list && !il.is_empty() {
-                    if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                        string_builder.push('\n');
+                    if !*cr {
+                        document_out.write_char('\n')?;
                     }
-                    string_builder.push_str("<p>");
+                    // if !document_out.is_empty() && !document_out.ends_with('\n') {
+                    //     document_out.write_char('\n')?;
+                    // }
+                    document_out.write_str("<p>")?;
                 }
-                il.to_html(string_builder, lrd_table);
+                for il in il {
+                    il.write_html(document_out, lrd_table)?;
+                }
+                // il.write_html(document_out, lrd_table)?;
                 if !in_tight_list && !il.is_empty() {
-                    string_builder.push_str("</p>\n");
+                    document_out.write_str("</p>\n")?;
+                    *cr = true;
+                } else if !il.is_empty() {
+                    *cr = false;
                 }
             }
-            ThematicBreak => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                string_builder.push_str("<hr />\n")
-            }
+            ThematicBreak => document_out.write_str("<hr />\n")?,
             IndentedCodeBlock(string, _items1) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
+                document_out.write_str("<pre><code>")?;
+                for c in string.chars() {
+                    write_html_reserved_char(c, document_out)?;
                 }
-                string_builder.push_str("<pre><code>");
-                for c in string.char_iter() {
-                    push_html_reserved_char(c, string_builder);
-                }
-                string_builder.push_str("\n</code></pre>\n");
+                document_out.write_str("\n</code></pre>\n")?;
+                *cr = true;
             }
             FencedCodeBlock(string, _, _, lang_hint, _, _) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
-                string_builder.push_str("<pre><code");
+                document_out.write_str("<pre><code")?;
                 if !lang_hint.is_empty() {
-                    string_builder.push_str(" class=\"language-");
-                    push_chars_with_entities_and_bs(
+                    document_out.write_str(" class=\"language-")?;
+                    write_chars_with_entities_and_bs(
                         &BorrowedStringPCI::new(lang_hint),
-                        string_builder,
+                        document_out,
                         false,
-                    );
-                    string_builder.push('\"');
+                    )?;
+                    document_out.write_char('\"')?;
                 }
-                string_builder.push('>');
-                for c in string.char_iter() {
-                    push_html_reserved_char(c, string_builder);
+                document_out.write_char('>')?;
+                for c in string.chars() {
+                    write_html_reserved_char(c, document_out)?;
                 }
-                string_builder.push_str("</code></pre>\n");
+                document_out.write_str("</code></pre>\n")?;
+                *cr = true;
             }
             HTMLBlock(string, ..) => {
-                if !string_builder.is_empty() && !string_builder.ends_with('\n') {
-                    string_builder.push('\n');
-                }
                 for c in string.chars() {
-                    string_builder.push(c);
+                    document_out.write_char(c)?;
                 }
-                string_builder.push('\n');
+                document_out.write_char('\n')?;
+                *cr = true;
             }
         }
+        Ok(())
     }
 }
 

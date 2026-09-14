@@ -13,7 +13,7 @@ use crate::string_normalize::normalize_label;
 
 pub type LRDTable = HashMap<String, (String, Option<String>)>;
 
-pub fn create_block_structure(markdown: &str) -> (AbstractSyntaxTree<String>, LRDTable) {
+pub fn create_block_structure(markdown: &str) -> (AbstractSyntaxTree<String, String>, LRDTable) {
     let mut lines_list: Vec<&str> = markdown.split('\n').collect();
     if matches!(lines_list.last(), Some(&"")) {
         lines_list.pop();
@@ -21,7 +21,7 @@ pub fn create_block_structure(markdown: &str) -> (AbstractSyntaxTree<String>, LR
     let mut lines = lines_list.iter().peekable();
 
     let lrd_table = HashMap::new();
-    let mut tree: AbstractSyntaxTree<String> = AbstractSyntaxTree::default();
+    let mut tree: AbstractSyntaxTree<String, String> = AbstractSyntaxTree::default();
 
     if lines.peek().is_none() {
         return (tree, lrd_table);
@@ -184,7 +184,7 @@ mod test_ls {
 // - check continuation_conditions for the tree above.
 // - check for lazily continuable paragraphs.
 fn check_tree_state(
-    ast: &AbstractSyntaxTree<String>,
+    ast: &AbstractSyntaxTree<String, String>,
     parsing_state: &mut ParsingState,
     line_state_op: &mut Option<&mut LineState>,
 ) {
@@ -308,7 +308,7 @@ fn thematic_break_encountered(char_iter: &mut LineState) -> bool {
     false
 }
 
-fn list_item_encountered(line_state: &mut LineState) -> Option<(ListType, Block<String>)> {
+fn list_item_encountered(line_state: &mut LineState) -> Option<(ListType, Block<String, String>)> {
     let space_before = line_state.space_from_last_structure;
     let c_0 = line_state.next()?;
     if c_0.is_numeric() {
@@ -397,7 +397,7 @@ fn block_quote_encountered(line_state: &mut LineState) -> bool {
     true
 }
 
-fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block<String>> {
+fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block<String, String>> {
     let pre_space_count = line_state.space_from_last_structure;
     let start_offset = line_state.offset();
     let t = line_state.next_if(|c| "`~".contains(c))?;
@@ -432,7 +432,7 @@ fn fenced_code_block_encountered(line_state: &mut LineState) -> Option<Block<Str
     ))
 }
 
-fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block<String>> {
+fn atx_heading_encountered(line_state: &mut LineState) -> Option<Block<String, String>> {
     let start_offset = line_state.offset();
     line_state.consume_while_char_eq('#');
     let pound_count = line_state.offset() - start_offset;
@@ -491,7 +491,7 @@ fn html_start_encountered(
     line_state: &mut LineState,
     open_par_exists: bool,
     space_from_last_structure: usize,
-) -> Option<Block<String>> {
+) -> Option<Block<String, String>> {
     let simple_starts_with = |target_str: &'static str| -> Box<dyn Fn(&mut LineState) -> bool> {
         Box::new(move |char_iter: &mut LineState| -> bool {
             let mut chars_seen = 0;
@@ -696,7 +696,7 @@ fn html_start_encountered(
     }
 }
 
-fn close_paragraph(ast: &mut AbstractSyntaxTree<String>, parsing_state: &mut ParsingState) {
+fn close_paragraph(ast: &mut AbstractSyntaxTree<String, String>, parsing_state: &mut ParsingState) {
     let Some(open_par_id) = parsing_state.lcpi_op else {
         return;
     };
@@ -1033,7 +1033,7 @@ fn close_paragraph(ast: &mut AbstractSyntaxTree<String>, parsing_state: &mut Par
 // }
 
 fn create_new_block_starts(
-    ast: &mut AbstractSyntaxTree<String>,
+    ast: &mut AbstractSyntaxTree<String, String>,
     parsing_state: &mut ParsingState,
     mut line_state: LineState,
 ) {
@@ -1158,7 +1158,7 @@ fn create_new_block_starts(
 
     let detighten_list = |list_being_added_to_id_op: Option<NodeId>,
                           parsing_state: &mut ParsingState,
-                          ast: &mut AbstractSyntaxTree<String>| {
+                          ast: &mut AbstractSyntaxTree<String, String>| {
         if let Some(list_block_id) = list_being_added_to_id_op {
             let block_depth = ast.get_block_depth(list_block_id);
 

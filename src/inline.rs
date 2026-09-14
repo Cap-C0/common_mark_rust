@@ -9,6 +9,7 @@ use crate::parsers::ReferenceLinkType::Full;
 use crate::parsers::*;
 use crate::peekable_char_indices::*;
 use crate::string_normalize::normalize_label;
+use std::fmt;
 use std::fmt::Debug;
 use std::ops::{Add, Range};
 use std::vec;
@@ -24,7 +25,7 @@ pub trait LeafContainerInline {
     where
         Self: 'a;
 
-    fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable);
+    // fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable);
     fn is_empty(&self) -> bool;
     fn char_iter(&self) -> impl Iterator<Item = char>;
     fn as_pci(&self) -> impl PeekableCharIndices<Offset = Self::Offset>;
@@ -37,11 +38,11 @@ impl LeafContainerInline for String {
         = BorrowedStringPCI<'a>
     where
         Self: 'a;
-    fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable) {
-        for ic in parse_inline(self, lrd_table) {
-            ic.to_html(self, string_builder, lrd_table);
-        }
-    }
+    // fn to_html(&self, string_builder: &mut String, lrd_table: &LRDTable) {
+    //     for ic in parse_inline(self, lrd_table) {
+    //         ic.write_html(self, string_builder, lrd_table);
+    //     }
+    // }
     fn is_empty(&self) -> bool {
         self.is_empty()
     }
@@ -93,192 +94,198 @@ where
     T: PeekableCharIndices,
 {
     //TODO: Make these all use fmt instead of string?
-    pub fn to_html(&self, string_array: &str, string_builder: &mut String, lrd_table: &LRDTable) {
+    pub fn write_html<W: fmt::Write + ?Sized>(
+        &self,
+        document_out: &mut W,
+        lrd_table: &LRDTable,
+    ) -> fmt::Result {
         match self {
-            Softbreak => string_builder.push('\n'),
-            Hardbreak => string_builder.push_str("<br />\n"),
+            Softbreak => document_out.write_char('\n')?,
+            Hardbreak => document_out.write_str("<br />\n")?,
             Text(chars) => {
-                push_chars_with_entities_and_bs(chars, string_builder, false);
+                write_chars_with_entities_and_bs(chars, document_out, false)?;
             }
             Emph(inline_contents) => {
-                string_builder.push_str("<em>");
+                document_out.write_str("<em>")?;
                 for ic in inline_contents {
-                    ic.to_html(string_array, string_builder, lrd_table);
+                    ic.write_html(document_out, lrd_table)?;
                 }
-                string_builder.push_str("</em>");
+                document_out.write_str("</em>")?;
             }
             Strong(inline_contents) => {
-                string_builder.push_str("<strong>");
+                document_out.write_str("<strong>")?;
                 for ic in inline_contents {
-                    ic.to_html(string_array, string_builder, lrd_table);
+                    ic.write_html(document_out, lrd_table)?;
                 }
-                string_builder.push_str("</strong>");
+                document_out.write_str("</strong>")?;
             }
             InlineLink(is_image, dest_op, tit_op, inline_contents) => {
                 if *is_image {
-                    string_builder.push_str("<img src=\"");
+                    document_out.write_str("<img src=\"")?;
                     if let Some(dest_chars) = dest_op {
-                        push_chars_with_entities_and_bs(dest_chars, string_builder, true);
+                        write_chars_with_entities_and_bs(dest_chars, document_out, true)?;
                     }
-                    string_builder.push_str("\" alt=\"");
+                    document_out.write_str("\" alt=\"")?;
                     for ic in inline_contents {
-                        ic.to_alt_text(string_array, string_builder);
+                        ic.to_alt_text(document_out)?;
                     }
-                    string_builder.push_str("\" ");
+                    document_out.write_str("\" ")?;
                     if let Some(tit_chars) = tit_op {
-                        string_builder.push_str("title=\"");
-                        push_chars_with_entities_and_bs(tit_chars, string_builder, false);
-                        string_builder.push_str("\" ");
+                        document_out.write_str("title=\"")?;
+                        write_chars_with_entities_and_bs(tit_chars, document_out, false)?;
+                        document_out.write_str("\" ")?;
                     }
-                    string_builder.push_str("/>");
+                    document_out.write_str("/>")?;
                 } else {
-                    string_builder.push_str("<a href=\"");
+                    document_out.write_str("<a href=\"")?;
                     if let Some(dest_chars) = dest_op {
-                        push_chars_with_entities_and_bs(dest_chars, string_builder, true);
+                        write_chars_with_entities_and_bs(dest_chars, document_out, true)?;
                     }
-                    string_builder.push('\"');
+                    document_out.write_char('\"')?;
                     if let Some(tit_chars) = tit_op {
-                        string_builder.push_str(" title=\"");
-                        push_chars_with_entities_and_bs(tit_chars, string_builder, false);
-                        string_builder.push('\"');
+                        document_out.write_str(" title=\"")?;
+                        write_chars_with_entities_and_bs(tit_chars, document_out, false)?;
+                        document_out.write_char('\"')?;
                     }
-                    string_builder.push('>');
+                    document_out.write_char('>')?;
                     for ic in inline_contents {
-                        ic.to_html(string_array, string_builder, lrd_table);
+                        ic.write_html(document_out, lrd_table)?;
                     }
-                    string_builder.push_str("</a>");
+                    document_out.write_str("</a>")?;
                 }
             }
             ReferenceLink(is_image, normalized_label, inline_contents) => {
                 let (dest, tit_op) = lrd_table.get(normalized_label).unwrap();
                 if *is_image {
-                    string_builder.push_str("<img src=\"");
-                    push_chars_with_entities_and_bs(
+                    document_out.write_str("<img src=\"")?;
+                    write_chars_with_entities_and_bs(
                         &BorrowedStringPCI::new(dest),
-                        string_builder,
+                        document_out,
                         true,
-                    );
-                    string_builder.push_str("\" alt=\"");
+                    )?;
+                    document_out.write_str("\" alt=\"")?;
                     for ic in inline_contents {
-                        ic.to_alt_text(string_array, string_builder);
+                        ic.to_alt_text(document_out)?;
                     }
-                    string_builder.push_str("\" ");
+                    document_out.write_str("\" ")?;
                     if let Some(tit_string) = tit_op {
-                        string_builder.push_str("title=\"");
-                        push_chars_with_entities_and_bs(
+                        document_out.write_str("title=\"")?;
+                        write_chars_with_entities_and_bs(
                             &BorrowedStringPCI::new(tit_string),
-                            string_builder,
+                            document_out,
                             false,
-                        );
-                        string_builder.push_str("\" ");
+                        )?;
+                        document_out.write_str("\" ")?;
                     }
-                    string_builder.push_str("/>");
+                    document_out.write_str("/>")?;
                 } else {
-                    string_builder.push_str("<a href=\"");
-                    push_chars_with_entities_and_bs(
+                    document_out.write_str("<a href=\"")?;
+                    write_chars_with_entities_and_bs(
                         &BorrowedStringPCI::new(dest),
-                        string_builder,
+                        document_out,
                         true,
-                    );
-                    string_builder.push('\"');
+                    )?;
+                    document_out.write_char('\"')?;
                     if let Some(tit) = tit_op {
-                        string_builder.push_str(" title=\"");
-                        push_chars_with_entities_and_bs(
+                        document_out.write_str(" title=\"")?;
+                        write_chars_with_entities_and_bs(
                             &BorrowedStringPCI::new(tit),
-                            string_builder,
+                            document_out,
                             false,
-                        );
-                        string_builder.push('\"');
+                        )?;
+                        document_out.write_char('\"')?;
                     }
-                    string_builder.push('>');
+                    document_out.write_char('>')?;
                     for ic in inline_contents {
-                        ic.to_html(string_array, string_builder, lrd_table);
+                        ic.write_html(document_out, lrd_table)?;
                     }
-                    string_builder.push_str("</a>");
+                    document_out.write_str("</a>")?;
                 }
             }
             AutoLink(link_chars, is_email) => {
-                string_builder.push_str("<a href=\"");
+                document_out.write_str("<a href=\"")?;
                 if *is_email {
-                    string_builder.push_str("mailto:");
+                    document_out.write_str("mailto:")?;
                 }
                 for c in link_chars.clone() {
-                    push_character_in_uri(c, string_builder);
+                    write_character_in_uri(c, document_out)?;
                 }
-                string_builder.push_str("\">");
+                document_out.write_str("\">")?;
                 for c in link_chars.clone() {
-                    push_html_reserved_char(c, string_builder);
+                    write_html_reserved_char(c, document_out)?;
                 }
-                string_builder.push_str("</a>");
+                document_out.write_str("</a>")?;
             }
             HTMLTag(html_chars) => {
                 for c in html_chars.clone() {
-                    string_builder.push(c);
+                    document_out.write_char(c)?;
                 }
             }
             Code(code_chars) => {
-                string_builder.push_str("<code>");
+                document_out.write_str("<code>")?;
                 for c in code_chars.clone() {
                     if c == '\n' {
-                        push_html_reserved_char(' ', string_builder);
+                        write_html_reserved_char(' ', document_out)?;
                     } else {
-                        push_html_reserved_char(c, string_builder);
+                        write_html_reserved_char(c, document_out)?;
                     }
                 }
-                string_builder.push_str("</code>");
+                document_out.write_str("</code>")?;
             }
             Dummy => panic!("should not encounter dummy at this point"),
         }
+        Ok(())
     }
 
-    pub fn to_alt_text(&self, _string_array: &str, _string_builder: &mut String) {
+    pub fn to_alt_text<W: fmt::Write + ?Sized>(&self, document_out: &mut W) -> fmt::Result {
         match self {
-            Softbreak => _string_builder.push('\n'),
-            Hardbreak => _string_builder.push('\n'),
+            Softbreak => document_out.write_char('\n')?,
+            Hardbreak => document_out.write_char('\n')?,
             Text(text_chars) => {
-                push_chars_with_entities_and_bs(text_chars, _string_builder, false);
+                write_chars_with_entities_and_bs(text_chars, document_out, false)?;
             }
             Emph(inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(_string_array, _string_builder);
+                    ic.to_alt_text(document_out)?;
                 }
             }
             Strong(inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(_string_array, _string_builder);
+                    ic.to_alt_text(document_out)?;
                 }
             }
             InlineLink(.., inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(_string_array, _string_builder);
+                    ic.to_alt_text(document_out)?;
                 }
             }
             ReferenceLink(.., inline_contents) => {
                 for ic in inline_contents {
-                    ic.to_alt_text(_string_array, _string_builder);
+                    ic.to_alt_text(document_out)?;
                 }
             }
             AutoLink(link_chars, ..) => {
                 for c in link_chars.clone() {
-                    push_html_reserved_char(c, _string_builder);
+                    write_html_reserved_char(c, document_out)?;
                 }
             }
             HTMLTag(html_chars) => {
                 for c in html_chars.clone() {
-                    _string_builder.push(c);
+                    document_out.write_char(c)?;
                 }
             }
             Code(code_chars) => {
                 for c in code_chars.clone() {
                     if c == '\n' {
-                        push_html_reserved_char(' ', _string_builder);
+                        write_html_reserved_char(' ', document_out)?;
                     } else {
-                        push_html_reserved_char(c, _string_builder);
+                        write_html_reserved_char(c, document_out)?;
                     }
                 }
             }
             Dummy => panic!("should not encounter dummy at this point"),
         }
+        Ok(())
     }
 }
 
