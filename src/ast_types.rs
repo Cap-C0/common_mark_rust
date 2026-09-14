@@ -1,4 +1,5 @@
 use core::fmt;
+use rayon::prelude::*;
 use std::option::Option::{None as Leaf, Some as Container};
 
 use crate::{
@@ -203,7 +204,7 @@ impl AbstractSyntaxTree<String, String> {
         AbstractSyntaxTree {
             nodes: self
                 .nodes
-                .iter()
+                .par_iter()
                 .map(|n| Node {
                     block: n.block.to_inline(lrd_table),
                     block_kind: n.block_kind.clone(),
